@@ -198,17 +198,34 @@ See `deploy/setup.sh` for the full automated provisioning script.
 
 ---
 
-## Build Phases
+## Build Status
+
+| Phase | Agent | Status | What's inside |
+|-------|-------|--------|---------------|
+| 1 | **Foundation** | ✅ Complete | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
+| 2 | **NANAMI** | ⏳ Next | Market data, indicator engine, session/regime detection, 3 trading model signals |
+| 3 | **GETO** | ⬜ Pending | Account monitor, consecutive tracker, DD monitor, news calendar, 10-check validator |
+| 4 | **TOJI** | ⬜ Pending | Lot calculator, order placer (paper first), trade monitor, logger, state updater |
+| 5 | **GOJO** | ⬜ Pending | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
+| 6 | **MAHORAGA** | ⬜ Pending | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
+| 7 | **Integration** | ⬜ Pending | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
+| 8 | **Go Live** | ⬜ Pending | `PAPER_MODE=false`, live on $20 HFM Cents account |
+
+### Phase 1 — What Was Built
 
 ```
-Phase 1 ✅  Foundation        — core/ (constants, state, MetaApi, news)
-Phase 2     NANAMI            — analyst skills + agent
-Phase 3     GETO              — risk validation (10 checks)
-Phase 4     TOJI              — executor (paper mode first)
-Phase 5     GOJO              — OpenClaw workspace + tools
-Phase 6     MAHORAGA          — learning + adaptation
-Phase 7     Integration       — paper trading (50+ trades)
-Phase 8     Go Live           — switch PAPER_MODE=false
+core/
+├── constants.py       All static values: risk params, session windows,
+│                      regime thresholds, Model A/B/C configs, poll intervals
+├── state_manager.py   Async SQLite wrapper (aiosqlite, WAL mode)
+│                      7 tables: system_state, account, trading_state,
+│                      session_trades, trades, alert_queue, session_info
+├── metaapi_client.py  Singleton connection + exponential backoff retry
+└── news_fetcher.py    Finnhub calendar, daily cache, fail-safe blocking default
+
+deploy/
+├── supervisord.conf   Process management for 4 Python agents on VPS
+└── setup.sh           One-shot Ubuntu 22.04 provisioning script
 ```
 
 ---
