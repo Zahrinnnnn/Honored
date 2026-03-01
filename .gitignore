@@ -1,0 +1,38 @@
+# Environment & secrets
+.env
+*.env
+
+# SQLite databases
+honored.db
+paper.db
+*.db-shm
+*.db-wal
+
+# News cache
+news_cache.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+deploy/logs/
+
+# OpenClaw credentials (never commit)
+.openclaw/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
