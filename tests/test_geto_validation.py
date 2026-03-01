@@ -136,7 +136,7 @@ def _make_signal(
 
 def run(coro):
     """Shorthand to run a coroutine in tests."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------

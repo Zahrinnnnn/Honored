@@ -200,18 +200,18 @@ See `deploy/setup.sh` for the full automated provisioning script.
 
 ## Build Status
 
-| Phase | Agent | Status | What's inside |
-|-------|-------|--------|---------------|
-| 1 | **Foundation** | ✅ Complete | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
-| 2 | **NANAMI** | ⏳ Next | Market data, indicator engine, session/regime detection, 3 trading model signals |
-| 3 | **GETO** | ⬜ Pending | Account monitor, consecutive tracker, DD monitor, news calendar, 10-check validator |
-| 4 | **TOJI** | ⬜ Pending | Lot calculator, order placer (paper first), trade monitor, logger, state updater |
-| 5 | **GOJO** | ⬜ Pending | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
-| 6 | **MAHORAGA** | ⬜ Pending | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
-| 7 | **Integration** | ⬜ Pending | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
-| 8 | **Go Live** | ⬜ Pending | `PAPER_MODE=false`, live on $20 HFM Cents account |
+| Phase | Agent | Status | Tests | What's inside |
+|-------|-------|--------|-------|---------------|
+| 1 | **Foundation** | ✅ Complete | — | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
+| 2 | **NANAMI** | ✅ Complete | 62/62 | Market data, indicator engine (18 cols), session/regime detection, 3 trading model signals |
+| 3 | **GETO** | ✅ Complete | 72/72 | Account monitor, consecutive tracker, DD monitor, news calendar, 11-check validator, halt logic |
+| 4 | **TOJI** | ⏳ Next | — | Lot calculator, order placer (paper first), trade monitor, logger, state updater |
+| 5 | **GOJO** | ⬜ Pending | — | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
+| 6 | **MAHORAGA** | ⬜ Pending | — | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
+| 7 | **Integration** | ⬜ Pending | — | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
+| 8 | **Go Live** | ⬜ Pending | — | `PAPER_MODE=false`, live on $20 HFM Cents account |
 
-### Phase 1 — What Was Built
+### Phase 1 — Foundation
 
 ```
 core/
@@ -226,6 +226,53 @@ core/
 deploy/
 ├── supervisord.conf   Process management for 4 Python agents on VPS
 └── setup.sh           One-shot Ubuntu 22.04 provisioning script
+```
+
+### Phase 2 — NANAMI (Analyst) — 62/62 tests
+
+```
+agents/nanami/
+├── skills/
+│   ├── market_data.py        XAUUSD OHLCV from MetaApi (M1/M5/M15), Asian range
+│   ├── indicator_engine.py   18 indicators: EMA9/21/50, RSI14, Stoch RSI, ATR14,
+│   │                         ADX14, MACD, BB(20,2σ), bb_width_pct, atr_pct
+│   ├── session_detector.py   SessionContext (atomic clock read), 4 session windows
+│   ├── regime_detector.py    ATR spike veto → ADX vote → Return ACF vote → BB vote
+│   ├── m5_momentum.py        Model A — EMA21 pullback, RSI 40–60, MACD confirm
+│   ├── m1_meanrev.py         Model B — BB extreme + RSI extreme (>72/<28)
+│   └── london_breakout.py    Model C — Asian range break, 07:00–07:30 GMT only
+└── agent.py                  60s/300s async poll loop, APPROVED signal guard
+```
+
+### Phase 3 — GETO (Risk Manager) — 72/72 tests
+
+```
+agents/geto/
+├── skills/
+│   ├── account_monitor.py      Reads balance/DD%/open positions from SQLite
+│   ├── consecutive_tracker.py  Reads loss streak, detects soft halt threshold
+│   ├── dd_monitor.py           Reads drawdown%, detects 50% emergency halt
+│   ├── news_calendar.py        Minutes-to-news from session_info (NANAMI writes);
+│   │                           falls back to Finnhub; 0.0 on failure (fail-safe)
+│   └── trade_validator.py      11 checks — returns ValidationResult (pure if/else)
+└── agent.py                    5s poll, validates PENDING signals, monitors halt
+                                conditions, writes APPROVED/REJECTED to SQLite,
+                                pushes SOFT_HALT / EMERGENCY_HALT alerts to queue
+```
+
+**GETO validation checks (all 11 must pass):**
+```
+1.  session_valid              live session is a trading session (incl. LONDON_BREAKOUT)
+2.  model_priority_ok          Model C exclusive during 07:00–07:30 breakout window
+3.  regime_matches_model       TRENDING↔Model A, RANGING↔Model B, any↔Model C
+4.  session_trades_within_limit count < per-session max (A:3, B:5, C:1/day)
+5.  consecutive_losses_ok      streak < 3
+6.  drawdown_ok                DD% < 50%
+7.  open_trades_ok             open positions < 2
+8.  news_clear                 minutes to next event > 30
+9.  spread_acceptable          spread < $4.00
+10. not_paused                 pause_flag is False
+11. not_halted                 halt_flag and emergency_halt_flag are both False
 ```
 
 ---
