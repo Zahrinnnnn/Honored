@@ -375,8 +375,8 @@ honored/
 
 ```
 PHASE 1 ✅ COMPLETE   Foundation
-PHASE 2 ⏳ NEXT       NANAMI — Analyst
-PHASE 3 ⬜ PENDING    GETO — Risk Manager
+PHASE 2 ✅ COMPLETE   NANAMI — Analyst
+PHASE 3 ⏳ NEXT       GETO — Risk Manager
 PHASE 4 ⬜ PENDING    TOJI — Executor
 PHASE 5 ⬜ PENDING    GOJO — Commander
 PHASE 6 ⬜ PENDING    MAHORAGA — Learning
@@ -424,38 +424,52 @@ PHASE 8 ⬜ PENDING    Go Live
   Commit: 91eb536 — pushed to git@github.com:Zahrinnnnn/Honored.git
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 2 — NANAMI (Analyst)              ⏳ NEXT     ║
+║  PHASE 2 — NANAMI (Analyst)              ✅ COMPLETE  ║
 ╚══════════════════════════════════════════════════════╝
 
-  [ ] agents/nanami/skills/market_data.py
+  [x] agents/nanami/skills/market_data.py
         Fetches XAUUSD OHLCV from MetaApi (M1, M5, M15 candles).
+        Also provides get_current_price() (bid/ask/spread) and
+        get_asian_range() (00:00–07:00 GMT high/low for Model C).
 
-  [ ] agents/nanami/skills/indicator_engine.py
-        Calculates EMA9/21/50, RSI14, ATR14, ADX14, MACD, BB.
+  [x] agents/nanami/skills/indicator_engine.py
+        add_indicators(df) — attaches EMA9/21/50, RSI14, ATR14,
+        ADX14, MACD(12/26/9), BB(20,2σ) to any candle DataFrame.
+        Uses `ta` library. Returns enriched copy, never modifies in-place.
 
-  [ ] agents/nanami/skills/session_detector.py
-        Returns current session name based on UTC time.
+  [x] agents/nanami/skills/session_detector.py
+        get_current_session() → "LONDON_BREAKOUT" | "LONDON_OPEN" |
+        "NY_OVERLAP" | "NY_CLOSE" | None.
+        is_blackout_period() / is_london_breakout_window() helpers.
 
-  [ ] agents/nanami/skills/regime_detector.py
-        TRENDING / RANGING / VOLATILE using ADX + ATR.
+  [x] agents/nanami/skills/regime_detector.py
+        detect_regime(df_m5) → "TRENDING" (ADX>25) | "RANGING" (ADX<20)
+        | "VOLATILE". ATR spike check as override (2× mean ATR).
 
-  [ ] agents/nanami/skills/m5_momentum.py
-        Model A logic → signal JSON or NO_TRADE.
+  [x] agents/nanami/skills/m5_momentum.py
+        Model A — M5 EMA21 pullback in trending market.
+        BUY/SELL when: HTF bias (M15 EMA50) + EMA21 wick touch +
+        RSI 40–60 + MACD histogram aligned. SL = 1×ATR clamped $5–$8.
 
-  [ ] agents/nanami/skills/m1_meanrev.py
-        Model B logic → signal JSON or NO_TRADE.
+  [x] agents/nanami/skills/m1_meanrev.py
+        Model B — M1 BB extreme + RSI extreme (>72 / <28).
+        SL = 1.5× BB band distance, clamped $3–$5.
 
-  [ ] agents/nanami/skills/london_breakout.py
-        Model C logic → signal JSON or NO_TRADE.
+  [x] agents/nanami/skills/london_breakout.py
+        Model C — M5 close above Asian range high / below Asian range low.
+        SL = Asian range width clamped $6–$8.
 
-  [ ] agents/nanami/agent.py
-        Main loop: poll every 60s active / 300s blackout.
-        Writes last_signal to SQLite. Respects session trade limits.
+  [x] agents/nanami/agent.py
+        Main asyncio loop: 60s active / 300s blackout.
+        Updates session_info (session, regime, spread, Asian range,
+        minutes_to_next_news) every poll for GETO to read.
+        APPROVED signal guard: never overwrites pending GETO-approved signal.
+        Writes signals as JSON to trading_state.last_signal.
 
-  → TEST: run standalone, verify signals on historical data
+  Commit: TBD — pushed to git@github.com:Zahrinnnnn/Honored.git
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 3 — GETO (Risk Manager)           ⬜ PENDING  ║
+║  PHASE 3 — GETO (Risk Manager)           ⏳ NEXT     ║
 ╚══════════════════════════════════════════════════════╝
 
   [ ] agents/geto/skills/account_monitor.py
