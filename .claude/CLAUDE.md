@@ -376,7 +376,7 @@ honored/
 ```
 PHASE 1 ✅ COMPLETE   Foundation
 PHASE 2 ✅ COMPLETE   NANAMI — Analyst
-PHASE 3 ⏳ NEXT       GETO — Risk Manager
+PHASE 3 ✅ COMPLETE   GETO — Risk Manager
 PHASE 4 ⬜ PENDING    TOJI — Executor
 PHASE 5 ⬜ PENDING    GOJO — Commander
 PHASE 6 ⬜ PENDING    MAHORAGA — Learning
@@ -433,18 +433,27 @@ PHASE 8 ⬜ PENDING    Go Live
         get_asian_range() (00:00–07:00 GMT high/low for Model C).
 
   [x] agents/nanami/skills/indicator_engine.py
-        add_indicators(df) — attaches EMA9/21/50, RSI14, ATR14,
-        ADX14, MACD(12/26/9), BB(20,2σ) to any candle DataFrame.
-        Uses `ta` library. Returns enriched copy, never modifies in-place.
+        add_indicators(df) — 18 columns: EMA9/21/50, ema21_slope, RSI14,
+        Stoch RSI (k/d), ATR14, atr_pct, ADX14, MACD(12/26/9), BB(20,2σ),
+        bb_width, bb_width_pct. Uses `ta` library.
+        _MIN_ROWS = 60 guard prevents IndexError on short DataFrames.
+        NOTE: ta returns 0.0 (not NaN) during ATR warm-up — filter with
+        df["atr14"] > 0, not dropna().
 
   [x] agents/nanami/skills/session_detector.py
-        get_current_session() → "LONDON_BREAKOUT" | "LONDON_OPEN" |
-        "NY_OVERLAP" | "NY_CLOSE" | None.
-        is_blackout_period() / is_london_breakout_window() helpers.
+        ROBUSTNESS REWRITE: Added SessionContext frozen dataclass (atomic
+        single UTC clock read — all fields consistent, no edge-case skew).
+        get_session_context() is primary API; all legacy helpers delegate to it.
+        _now_utc() returns full datetime (not time) — use this as patch target
+        in tests, not _now_utc_time().
 
   [x] agents/nanami/skills/regime_detector.py
-        detect_regime(df_m5) → "TRENDING" (ADX>25) | "RANGING" (ADX<20)
-        | "VOLATILE". ATR spike check as override (2× mean ATR).
+        ROBUSTNESS REWRITE: Replaced Hurst VR (broken — overlapping-window
+        VR estimator has systematic negative bias; AR1 phi=0.7 gives H≈0.53,
+        below unreachable H>0.55 threshold) with Return ACF.
+        Return ACF = avg lag-1..3 autocorrelation of log returns. Symmetric,
+        no bias. ACF > +0.10 → trending, ACF < -0.10 → ranging. For fBm:
+        ACF(k) = 2^(2H-1) - 1.  _return_acf() exposed for unit testing.
 
   [x] agents/nanami/skills/m5_momentum.py
         Model A — M5 EMA21 pullback in trending market.
@@ -466,19 +475,21 @@ PHASE 8 ⬜ PENDING    Go Live
         APPROVED signal guard: never overwrites pending GETO-approved signal.
         Writes signals as JSON to trading_state.last_signal.
 
-  Commit: TBD — pushed to git@github.com:Zahrinnnnn/Honored.git
+  Commits: eed1a9a (initial build), d7f9beb (robustness: SessionContext +
+           extended indicators), 59503e0 (Hurst VR → Return ACF fix)
+  Tests:   62/62 passing (test_nanami_signals.py)
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 3 — GETO (Risk Manager)           ⏳ NEXT     ║
+║  PHASE 3 — GETO (Risk Manager)           ✅ COMPLETE  ║
 ╚══════════════════════════════════════════════════════╝
 
-  [ ] agents/geto/skills/account_monitor.py
-  [ ] agents/geto/skills/consecutive_tracker.py
-  [ ] agents/geto/skills/dd_monitor.py
-  [ ] agents/geto/skills/news_calendar.py
-  [ ] agents/geto/skills/trade_validator.py   ← all 10 checks
-  [ ] agents/geto/agent.py
-  → TEST: feed mock signals, verify all 10 checks fire correctly
+  [x] agents/geto/skills/account_monitor.py
+  [x] agents/geto/skills/consecutive_tracker.py
+  [x] agents/geto/skills/dd_monitor.py
+  [x] agents/geto/skills/news_calendar.py
+  [x] agents/geto/skills/trade_validator.py   ← 11 checks (10+1 split flags)
+  [x] agents/geto/agent.py
+  → TEST: 72/72 passing — test_geto_validation.py
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 4 — TOJI (Executor)               ⬜ PENDING  ║
