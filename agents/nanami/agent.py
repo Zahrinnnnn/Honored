@@ -84,21 +84,24 @@ async def run():
 
 
 async def _poll(state: StateManager):
-    # ── 0. Asian blackout — minimal work, just update session info ──────────
-    if session_detector.is_blackout_period():
+    # ── 0. Classify session (single atomic clock read for the entire poll) ──
+    ctx = session_detector.get_session_context()
+
+    if ctx.is_blackout:
         await state.set_session_info("current_session", "ASIAN_BLACKOUT")
         logger.debug("Asian blackout — sleeping")
         return
 
-    # ── 1. Detect session ───────────────────────────────────────────────────
-    session = session_detector.get_current_session()
+    session = ctx.name
     if session is None:
         await state.set_session_info("current_session", "NONE")
-        logger.debug("Outside active session windows — no signal attempt")
+        logger.debug(
+            "Outside active session windows — no signal attempt"
+        )
         return
 
     await state.set_session_info("current_session", session)
-    is_breakout_window = session_detector.is_london_breakout_window()
+    is_breakout_window = ctx.is_breakout_window
 
     # ── 2. Fetch candles ────────────────────────────────────────────────────
     df_m5 = await market_data.get_candles("5m", count=200)

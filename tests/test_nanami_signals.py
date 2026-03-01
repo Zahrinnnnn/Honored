@@ -9,7 +9,7 @@ Run: python -m pytest tests/test_nanami_signals.py -v
 
 import sys
 import os
-from datetime import datetime, timezone, time
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -26,6 +26,8 @@ from agents.nanami.skills import (
     m1_meanrev,
     london_breakout,
 )
+from agents.nanami.skills.session_detector import SessionContext
+from agents.nanami.skills.regime_detector import _hurst_vr
 from core.constants import (
     M5_SL_MIN, M5_SL_MAX,
     M1_SL_MIN, M1_SL_MAX,
@@ -82,12 +84,17 @@ def _ranging_candles(n: int = 200) -> pd.DataFrame:
     return pd.DataFrame(data)
 
 
+def _mock_dt(hour: int, minute: int = 0) -> datetime:
+    """Return a timezone-aware UTC datetime for a given hour/minute."""
+    return datetime(2024, 1, 15, hour, minute, 0, tzinfo=timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # indicator_engine tests
 # ---------------------------------------------------------------------------
 
 class TestIndicatorEngine:
-    def test_columns_added(self):
+    def test_core_columns_added(self):
         df = indicator_engine.add_indicators(_candles(200))
         expected = [
             "ema9", "ema21", "ema50",
@@ -97,6 +104,13 @@ class TestIndicatorEngine:
         ]
         for col in expected:
             assert col in df.columns, f"Missing column: {col}"
+
+    def test_extended_columns_added(self):
+        """New columns added in the robust indicator engine."""
+        df = indicator_engine.add_indicators(_candles(200))
+        for col in ("ema21_slope", "stoch_rsi_k", "stoch_rsi_d",
+                    "atr_pct", "bb_width", "bb_width_pct"):
+            assert col in df.columns, f"Missing extended column: {col}"
 
     def test_returns_copy(self):
         original = _candles(200)
@@ -108,18 +122,101 @@ class TestIndicatorEngine:
         """Last row should have valid indicators with 200 candles."""
         df = indicator_engine.add_indicators(_candles(200))
         last = df.iloc[-1]
-        # EMA50 needs 50 candles; ADX14 needs ~28; BB20 needs 20
         for col in ["ema21", "ema50", "rsi14", "adx14", "bb_upper", "bb_lower"]:
             assert not pd.isna(last[col]), f"{col} is NaN on last row with 200 candles"
+
+    def test_extended_columns_valid_at_end(self):
+        """Extended columns should be non-NaN at the last row with 200 candles."""
+        df = indicator_engine.add_indicators(_candles(200))
+        last = df.iloc[-1]
+        for col in ("atr_pct", "bb_width", "bb_width_pct"):
+            assert not pd.isna(last[col]), f"{col} is NaN on last row with 200 candles"
+
+    def test_bb_width_pct_positive(self):
+        df = indicator_engine.add_indicators(_candles(200))
+        valid = df["bb_width_pct"].dropna()
+        assert (valid > 0).all(), "bb_width_pct should always be positive"
+
+    def test_atr_pct_positive(self):
+        df = indicator_engine.add_indicators(_candles(200))
+        # atr14 starts at 0 during the warm-up period (ta library behaviour);
+        # only check rows where atr14 is actually positive (post-warm-up).
+        valid = df.loc[df["atr14"] > 0, "atr_pct"]
+        assert len(valid) > 0, "Expected some positive atr14 values in 200 rows"
+        assert (valid > 0).all(), "atr_pct should be positive wherever atr14 > 0"
+
+    def test_stoch_rsi_in_range(self):
+        df = indicator_engine.add_indicators(_trending_candles(200))
+        valid_k = df["stoch_rsi_k"].dropna()
+        valid_d = df["stoch_rsi_d"].dropna()
+        assert ((valid_k >= 0) & (valid_k <= 1)).all(), "stoch_rsi_k out of [0,1]"
+        assert ((valid_d >= 0) & (valid_d <= 1)).all(), "stoch_rsi_d out of [0,1]"
+
+    def test_short_df_returns_all_nan(self):
+        """Fewer than 60 candles — all indicator cols are NaN, no IndexError."""
+        df = indicator_engine.add_indicators(_candles(30))
+        for col in indicator_engine._INDICATOR_COLS:
+            assert col in df.columns
+            assert df[col].isna().all(), f"{col} should be all-NaN for 30-row input"
 
     def test_has_valid_indicators_helper(self):
         df = indicator_engine.add_indicators(_candles(200))
         row = df.iloc[-1]
         assert indicator_engine.has_valid_indicators(row, ["ema21", "rsi14"])
-        # Force NaN
         row2 = row.copy()
         row2["ema21"] = float("nan")
         assert not indicator_engine.has_valid_indicators(row2, ["ema21"])
+
+
+# ---------------------------------------------------------------------------
+# Hurst VR unit tests
+# ---------------------------------------------------------------------------
+
+class TestHurstVR:
+    def test_insufficient_data_returns_neutral(self):
+        """Less than 60 prices → 0.5 (neutral)."""
+        prices = np.linspace(2300, 2330, 59)
+        assert _hurst_vr(prices) == 0.5
+
+    def test_exactly_min_prices_does_not_crash(self):
+        """60 prices should not raise and return a float in [0, 1]."""
+        rng = np.random.default_rng(1)
+        prices = np.cumsum(rng.normal(0, 1, 60)) + 2300.0
+        h = _hurst_vr(prices)
+        assert 0.0 <= h <= 1.0
+
+    def test_constant_prices_returns_neutral(self):
+        """All prices identical → variance = 0 → degenerate → 0.5."""
+        prices = np.full(120, 2350.0)
+        assert _hurst_vr(prices) == 0.5
+
+    def test_returns_float_in_range(self):
+        """Any non-degenerate input should give H in [0, 1]."""
+        rng = np.random.default_rng(42)
+        prices = np.cumsum(rng.normal(0, 1, 150)) + 2300.0
+        h = _hurst_vr(prices)
+        assert 0.0 <= h <= 1.0
+
+    def test_strong_uptrend_gives_high_h(self):
+        """
+        A strong deterministic uptrend with small noise should give H > 0.55.
+        Theory: Var[X(t+τ) - X(t)] ≈ (slope*τ)² + 2σ²
+        At large τ, the τ² term dominates → slope ≈ 2 → H ≈ 1.
+        """
+        rng = np.random.default_rng(7)
+        prices = 2300.0 + 1.0 * np.arange(120) + rng.normal(0, 0.05, 120)
+        h = _hurst_vr(prices)
+        assert h > 0.55, f"Expected H > 0.55 for strong uptrend, got {h:.3f}"
+
+    def test_random_walk_h_near_half(self):
+        """
+        Pure random walk: H should be roughly 0.5 (no strong bias).
+        We use a generous band (0.3–0.7) since it's stochastic.
+        """
+        rng = np.random.default_rng(123)
+        prices = np.cumsum(rng.normal(0, 1, 500)) + 2300.0
+        h = _hurst_vr(prices)
+        assert 0.3 <= h <= 0.7, f"Expected H ≈ 0.5 for random walk, got {h:.3f}"
 
 
 # ---------------------------------------------------------------------------
@@ -127,15 +224,12 @@ class TestIndicatorEngine:
 # ---------------------------------------------------------------------------
 
 class TestSessionDetector:
-    def _mock_time(self, hour: int, minute: int = 0):
-        """Return a time object for use in patches."""
-        from datetime import time as time_
-        return time_(hour, minute)
-
     def _at(self, hour: int, minute: int = 0):
-        """Patch _now_utc_time() to return a specific time."""
-        t = time(hour, minute)
-        return patch.object(session_detector, "_now_utc_time", return_value=t)
+        """Patch _now_utc() to return a specific UTC datetime."""
+        dt = _mock_dt(hour, minute)
+        return patch.object(session_detector, "_now_utc", return_value=dt)
+
+    # ── Legacy helpers ────────────────────────────────────────────────────
 
     def test_london_breakout_window(self):
         with self._at(7, 15):
@@ -178,6 +272,73 @@ class TestSessionDetector:
             assert session_detector.get_current_session() is None
             assert session_detector.is_blackout_period() is False
 
+    # ── SessionContext ────────────────────────────────────────────────────
+
+    def test_context_has_all_fields(self):
+        with self._at(8, 0):
+            ctx = session_detector.get_session_context()
+            assert isinstance(ctx, SessionContext)
+            assert hasattr(ctx, "name")
+            assert hasattr(ctx, "is_active")
+            assert hasattr(ctx, "is_blackout")
+            assert hasattr(ctx, "is_breakout_window")
+            assert hasattr(ctx, "minutes_elapsed")
+            assert hasattr(ctx, "minutes_remaining")
+
+    def test_context_london_open(self):
+        with self._at(8, 30):
+            ctx = session_detector.get_session_context()
+            assert ctx.name == "LONDON_OPEN"
+            assert ctx.is_active is True
+            assert ctx.is_blackout is False
+            assert ctx.is_breakout_window is False
+            assert ctx.minutes_elapsed == 90.0   # 07:00 → 08:30
+            assert ctx.minutes_remaining == 90.0  # 08:30 → 10:00
+
+    def test_context_breakout_window(self):
+        with self._at(7, 15):
+            ctx = session_detector.get_session_context()
+            assert ctx.name == "LONDON_BREAKOUT"
+            assert ctx.is_active is True
+            assert ctx.is_breakout_window is True
+            assert ctx.minutes_elapsed == 15.0
+            assert ctx.minutes_remaining == 15.0
+
+    def test_context_blackout(self):
+        with self._at(2, 0):
+            ctx = session_detector.get_session_context()
+            assert ctx.name is None
+            assert ctx.is_active is False
+            assert ctx.is_blackout is True
+            assert ctx.minutes_elapsed == 0.0
+            assert ctx.minutes_remaining == 0.0
+
+    def test_context_between_sessions(self):
+        with self._at(11, 0):
+            ctx = session_detector.get_session_context()
+            assert ctx.name is None
+            assert ctx.is_active is False
+            assert ctx.is_blackout is False
+
+    def test_context_ny_overlap(self):
+        with self._at(14, 0):
+            ctx = session_detector.get_session_context()
+            assert ctx.name == "NY_OVERLAP"
+            assert ctx.is_active is True
+            assert ctx.minutes_elapsed == 120.0   # 12:00 → 14:00
+            assert ctx.minutes_remaining == 120.0  # 14:00 → 16:00
+
+    def test_context_is_immutable(self):
+        """SessionContext is frozen — attribute assignment should raise."""
+        import dataclasses
+        with self._at(8, 0):
+            ctx = session_detector.get_session_context()
+            try:
+                ctx.name = "HACKED"  # type: ignore[misc]
+                assert False, "Should have raised FrozenInstanceError"
+            except dataclasses.FrozenInstanceError:
+                pass
+
 
 # ---------------------------------------------------------------------------
 # regime_detector tests
@@ -186,7 +347,6 @@ class TestSessionDetector:
 class TestRegimeDetector:
     def test_trending_regime(self):
         df = indicator_engine.add_indicators(_trending_candles(200))
-        # Just test the function returns a valid regime string
         regime = regime_detector.detect_regime(df)
         assert regime in ("TRENDING", "RANGING", "VOLATILE")
 
@@ -198,24 +358,50 @@ class TestRegimeDetector:
     def test_empty_df_returns_volatile(self):
         assert regime_detector.detect_regime(pd.DataFrame()) == "VOLATILE"
 
-    def test_missing_adx_column_returns_volatile(self):
+    def test_missing_indicators_returns_volatile(self):
         df = _candles(50)  # no indicators added
         assert regime_detector.detect_regime(df) == "VOLATILE"
 
-    def test_nan_adx_returns_volatile(self):
+    def test_short_df_nan_indicators_returns_volatile(self):
         df = indicator_engine.add_indicators(_candles(10))  # too few for ADX
         assert regime_detector.detect_regime(df) == "VOLATILE"
 
     def test_atr_spike_overrides_to_volatile(self):
         """If ATR is 3× mean, regime should be VOLATILE regardless of ADX."""
         df = indicator_engine.add_indicators(_trending_candles(200))
-        # Force ATR spike on last row
         df = df.copy()
         df.iloc[-1, df.columns.get_loc("atr14")] = df["atr14"].iloc[-20:].mean() * 3.0
-        # Force high ADX too
         df.iloc[-1, df.columns.get_loc("adx14")] = 40.0
+        assert regime_detector.detect_regime(df) == "VOLATILE"
+
+    def test_all_trending_signals_give_trending(self):
+        """When ADX, Hurst, and BB expansion all agree → TRENDING."""
+        df = indicator_engine.add_indicators(_trending_candles(200))
+        df = df.copy()
+        last = len(df) - 1
+
+        # Override the last 120 close prices with a strong linear trend + tiny noise
+        # so Hurst VR gives H > 0.55 (variance ∝ τ² for large lags → H ≈ 1).
+        rng = np.random.default_rng(777)
+        for i, idx in enumerate(range(max(0, last - 119), last + 1)):
+            df.at[idx, "close"] = 2300.0 + 1.0 * i + rng.normal(0, 0.05)
+
+        # Force ADX trending
+        df.at[last, "adx14"] = 35.0
+
+        # Force BB expansion: last value above the 70th percentile of last 50 bars
+        bb_max = df["bb_width_pct"].iloc[-50:].max()
+        if pd.isna(bb_max) or bb_max == 0:
+            bb_max = 1.0
+        df.at[last, "bb_width_pct"] = bb_max * 2.0
+
         result = regime_detector.detect_regime(df)
-        assert result == "VOLATILE"
+        assert result == "TRENDING"
+
+    def test_regime_returns_valid_string(self):
+        df = indicator_engine.add_indicators(_ranging_candles(200))
+        result = regime_detector.detect_regime(df)
+        assert result in ("TRENDING", "RANGING", "VOLATILE")
 
 
 # ---------------------------------------------------------------------------
@@ -234,22 +420,20 @@ class TestModelA:
         df = indicator_engine.add_indicators(_trending_candles(200))
         df_copy = df.copy()
 
-        # Force last candle into a perfect BUY setup
         last_idx = len(df_copy) - 1
-        close = 2450.0
-        ema21 = 2448.0      # below close
-        ema50_htf = 2400.0  # below close (bullish HTF)
+        close  = 2450.0
+        ema21  = 2448.0
+        ema50_htf = 2400.0
 
         df_copy.at[last_idx, "close"]     = close
-        df_copy.at[last_idx, "low"]       = ema21 - 0.5   # wick touched EMA21
+        df_copy.at[last_idx, "low"]       = ema21 - 0.5
         df_copy.at[last_idx, "ema21"]     = ema21
         df_copy.at[last_idx, "ema50"]     = 2449.0
-        df_copy.at[last_idx, "rsi14"]     = 52.0           # in 40-60 zone
-        df_copy.at[last_idx, "macd_hist"] = 0.05           # positive
-        df_copy.at[last_idx, "adx14"]     = 30.0           # trending
-        df_copy.at[last_idx, "atr14"]     = 6.0            # $6 ATR
+        df_copy.at[last_idx, "rsi14"]     = 52.0
+        df_copy.at[last_idx, "macd_hist"] = 0.05
+        df_copy.at[last_idx, "adx14"]     = 30.0
+        df_copy.at[last_idx, "atr14"]     = 6.0
 
-        # M15: force last row HTF EMA50 below price
         df_m15 = df_copy.copy()
         df_m15.at[last_idx, "ema50"] = ema50_htf
         df_m15.at[last_idx, "close"] = close
@@ -308,10 +492,10 @@ class TestModelB:
         last = len(df_copy) - 1
 
         close    = 2340.0
-        bb_lower = 2341.0  # close is at/below lower band
+        bb_lower = 2341.0
 
         df_copy.at[last, "close"]    = close
-        df_copy.at[last, "rsi14"]    = 25.0      # < 28 (oversold)
+        df_copy.at[last, "rsi14"]    = 25.0
         df_copy.at[last, "bb_lower"] = bb_lower
         df_copy.at[last, "bb_upper"] = 2360.0
         df_copy.at[last, "bb_mid"]   = 2350.0
@@ -324,10 +508,10 @@ class TestModelB:
         last = len(df_copy) - 1
 
         close    = 2362.0
-        bb_upper = 2360.0  # close is at/above upper band
+        bb_upper = 2360.0
 
         df_copy.at[last, "close"]    = close
-        df_copy.at[last, "rsi14"]    = 75.0      # > 72 (overbought)
+        df_copy.at[last, "rsi14"]    = 75.0
         df_copy.at[last, "bb_lower"] = 2340.0
         df_copy.at[last, "bb_upper"] = bb_upper
         df_copy.at[last, "bb_mid"]   = 2350.0
@@ -368,13 +552,13 @@ class TestModelB:
 
     def test_no_signal_when_rsi_not_extreme(self):
         df = self._setup_oversold_buy()
-        df.at[len(df) - 1, "rsi14"] = 40.0  # not oversold
+        df.at[len(df) - 1, "rsi14"] = 40.0
         signal = m1_meanrev.generate_signal(df, "NY_OVERLAP", "RANGING")
         assert signal is None
 
     def test_no_signal_when_not_at_bb(self):
         df = self._setup_oversold_buy()
-        df.at[len(df) - 1, "close"] = 2355.0  # inside bands
+        df.at[len(df) - 1, "close"] = 2355.0
         signal = m1_meanrev.generate_signal(df, "NY_OVERLAP", "RANGING")
         assert signal is None
 
@@ -385,24 +569,21 @@ class TestModelB:
 
 class TestModelC:
     def test_buy_breakout(self):
-        df = _candles(50, base_price=2365.0)  # price above asian_high
-        asian_high, asian_low = 2360.0, 2350.0
-        signal = london_breakout.generate_signal(df, asian_high, asian_low)
+        df = _candles(50, base_price=2365.0)
+        signal = london_breakout.generate_signal(df, 2360.0, 2350.0)
         assert signal is not None
         assert signal["direction"] == "BUY"
         assert signal["model"] == "LONDON_BREAKOUT"
 
     def test_sell_breakout(self):
-        df = _candles(50, base_price=2345.0)  # price below asian_low
-        asian_high, asian_low = 2360.0, 2350.0
-        signal = london_breakout.generate_signal(df, asian_high, asian_low)
+        df = _candles(50, base_price=2345.0)
+        signal = london_breakout.generate_signal(df, 2360.0, 2350.0)
         assert signal is not None
         assert signal["direction"] == "SELL"
 
     def test_no_signal_inside_range(self):
-        df = _candles(50, base_price=2355.0)  # price inside range
-        asian_high, asian_low = 2360.0, 2350.0
-        signal = london_breakout.generate_signal(df, asian_high, asian_low)
+        df = _candles(50, base_price=2355.0)
+        signal = london_breakout.generate_signal(df, 2360.0, 2350.0)
         assert signal is None
 
     def test_sl_within_range(self):
@@ -414,16 +595,14 @@ class TestModelC:
     def test_sl_clamped_to_min_when_range_narrow(self):
         """Asian range of $1 → SL clamped to BREAKOUT_SL_MIN ($6)."""
         df = _candles(50, base_price=2361.5)
-        asian_high, asian_low = 2361.0, 2360.0  # $1 range
-        signal = london_breakout.generate_signal(df, asian_high, asian_low)
+        signal = london_breakout.generate_signal(df, 2361.0, 2360.0)
         assert signal is not None
         assert signal["sl_distance"] == BREAKOUT_SL_MIN
 
     def test_sl_clamped_to_max_when_range_wide(self):
         """Asian range of $20 → SL clamped to BREAKOUT_SL_MAX ($8)."""
         df = _candles(50, base_price=2381.0)
-        asian_high, asian_low = 2380.0, 2360.0  # $20 range
-        signal = london_breakout.generate_signal(df, asian_high, asian_low)
+        signal = london_breakout.generate_signal(df, 2380.0, 2360.0)
         assert signal is not None
         assert signal["sl_distance"] == BREAKOUT_SL_MAX
 
