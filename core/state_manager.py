@@ -270,6 +270,15 @@ class StateManager:
         )
         return [dict(r) for r in rows]
 
+    async def get_open_trades(self) -> list:
+        """Return all currently open trades (result IS NULL) for the current mode."""
+        paper_filter = 1 if PAPER_MODE else 0
+        rows = await self._fetchall(
+            "SELECT * FROM trades WHERE result IS NULL AND paper = ? ORDER BY id ASC",
+            (paper_filter,),
+        )
+        return [dict(r) for r in rows]
+
     async def get_all_trades(self, limit: int = 500) -> list:
         rows = await self._fetchall(
             "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)

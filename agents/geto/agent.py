@@ -23,17 +23,12 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
-
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
-from core.constants import (  # noqa: E402
-    MAX_CONSECUTIVE_LOSSES,
-    MAX_DRAWDOWN_PCT,
-)
+from core.constants import MAX_DRAWDOWN_PCT  # noqa: E402
 from core.state_manager import StateManager  # noqa: E402
 from agents.nanami.skills import session_detector  # noqa: E402
 from agents.geto.skills.consecutive_tracker import (  # noqa: E402

@@ -377,7 +377,7 @@ honored/
 PHASE 1 ✅ COMPLETE   Foundation
 PHASE 2 ✅ COMPLETE   NANAMI — Analyst
 PHASE 3 ✅ COMPLETE   GETO — Risk Manager
-PHASE 4 ⬜ PENDING    TOJI — Executor
+PHASE 4 ✅ COMPLETE   TOJI — Executor
 PHASE 5 ⬜ PENDING    GOJO — Commander
 PHASE 6 ⬜ PENDING    MAHORAGA — Learning
 PHASE 7 ⬜ PENDING    Integration & Paper Trading
@@ -492,16 +492,44 @@ PHASE 8 ⬜ PENDING    Go Live
   → TEST: 72/72 passing — test_geto_validation.py
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 4 — TOJI (Executor)               ⬜ PENDING  ║
+║  PHASE 4 — TOJI (Executor)              ✅ COMPLETE  ║
 ╚══════════════════════════════════════════════════════╝
 
-  [ ] agents/toji/skills/lot_calculator.py
-  [ ] agents/toji/skills/order_placer.py      ← paper mode first
-  [ ] agents/toji/skills/trade_monitor.py
-  [ ] agents/toji/skills/trade_logger.py
-  [ ] agents/toji/skills/state_updater.py
-  [ ] agents/toji/agent.py
-  → TEST: paper trade 50 signals, verify logs and state updates
+  [x] agents/toji/skills/lot_calculator.py
+        calculate_lot(balance, sl_distance) → lot rounded to 2dp, min 0.01
+        calculate_risk_amount(balance) → USD risk per trade
+
+  [x] agents/toji/skills/order_placer.py
+        Paper: simulate fill at signal entry_price, return PAPER-<hex> order_id.
+        Live:  MetaApi create_market_buy/sell_order with SL+TP set on broker.
+        PAPER_MODE env var controls which path runs.
+
+  [x] agents/toji/skills/trade_monitor.py
+        check_exit(trade, bid, ask) → "WIN" / "LOSS" / None
+        BUY exits at bid (SL if bid≤sl, TP if bid≥tp).
+        SELL exits at ask (SL if ask≥sl, TP if ask≤tp).
+        calculate_pnl(trade, exit_price) → lot × price_diff_USD
+        get_current_price(connection) → {bid, ask} or None on error.
+
+  [x] agents/toji/skills/trade_logger.py
+        log_trade_open()  → writes open trade row (result=NULL), returns trade_id.
+        log_trade_close() → updates row with result/exit_price/pnl/duration_mins.
+
+  [x] agents/toji/skills/state_updater.py
+        post_trade_update(): consecutive losses (reset/increment), session count,
+        account balance/equity/peak/DD/open_positions, last_trade_result.
+        Returns (balance_after, drawdown_pct, duration_mins).
+        MODEL_C maps session_key → "LONDON_BREAKOUT" (daily limit).
+
+  [x] agents/toji/agent.py
+        5s poll: reads last_risk_decision=="APPROVED" → lot calc → place_order
+        → log_trade_open → update open_positions → mark PLACED → push TRADE_OPENED alert.
+        TOJI_MONITOR_INTERVAL poll: get_current_price → check_exit on all open paper
+        trades → _close_trade (state_updater + log_trade_close + TRADE_CLOSED alert).
+        MetaApi optional in paper mode (for price reads). Fails gracefully if unavailable.
+
+  [x] core/state_manager.py — added get_open_trades() method.
+  → TEST: 54/54 passing — tests/test_toji_execution.py
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 5 — GOJO (Commander)              ⬜ PENDING  ║

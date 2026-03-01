@@ -205,8 +205,8 @@ See `deploy/setup.sh` for the full automated provisioning script.
 | 1 | **Foundation** | ✅ Complete | — | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
 | 2 | **NANAMI** | ✅ Complete | 62/62 | Market data, indicator engine (18 cols), session/regime detection, 3 trading model signals |
 | 3 | **GETO** | ✅ Complete | 72/72 | Account monitor, consecutive tracker, DD monitor, news calendar, 11-check validator, halt logic |
-| 4 | **TOJI** | ⏳ Next | — | Lot calculator, order placer (paper first), trade monitor, logger, state updater |
-| 5 | **GOJO** | ⬜ Pending | — | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
+| 4 | **TOJI** | ✅ Complete | 54/54 | Lot calculator, paper/live order placer, trade monitor (SL/TP detection), trade logger, state updater |
+| 5 | **GOJO** | ⏳ Next | — | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
 | 6 | **MAHORAGA** | ⬜ Pending | — | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
 | 7 | **Integration** | ⬜ Pending | — | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
 | 8 | **Go Live** | ⬜ Pending | — | `PAPER_MODE=false`, live on $20 HFM Cents account |
@@ -274,6 +274,28 @@ agents/geto/
 10. not_paused                 pause_flag is False
 11. not_halted                 halt_flag and emergency_halt_flag are both False
 ```
+
+### Phase 4 — TOJI (Executor) — 54/54 tests
+
+```
+agents/toji/
+├── skills/
+│   ├── lot_calculator.py   lot = round((balance × 10%) / sl_distance, 2); min 0.01
+│   ├── order_placer.py     Paper: simulated fill at signal entry_price (PAPER-<id>)
+│   │                       Live:  MetaApi create_market_buy/sell_order with SL+TP
+│   ├── trade_monitor.py    check_exit(trade, bid, ask) → WIN/LOSS/None
+│   │                       calculate_pnl(trade, exit_price) → USD P&L
+│   │                       get_current_price(connection) → {bid, ask}
+│   ├── trade_logger.py     log_trade_open() → trade_id; log_trade_close() updates row
+│   └── state_updater.py    post_trade_update(): consecutive losses, session count,
+│                           account balance/DD/open_positions, trading_state keys
+└── agent.py                5s poll: APPROVED → lot calc → place order → log open
+                            → mark PLACED; TOJI_MONITOR_INTERVAL poll: check SL/TP
+                            → log close → push TRADE_OPENED/TRADE_CLOSED alerts
+```
+
+**PnL formula:** `pnl = lot_size × price_diff_USD`
+(derives from `lot = risk_amount / sl_distance`; 1 lot = $1/dollar on HFM Cents)
 
 ---
 
