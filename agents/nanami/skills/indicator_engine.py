@@ -23,15 +23,33 @@ import ta.momentum
 import ta.volatility
 
 
+_INDICATOR_COLS = (
+    "ema9", "ema21", "ema50",
+    "rsi14", "atr14", "adx14",
+    "macd", "macd_signal", "macd_hist",
+    "bb_upper", "bb_mid", "bb_lower",
+)
+
+# ta library raises IndexError on datasets smaller than the indicator window.
+# Require a minimum of 60 rows; below that, return NaN columns so callers
+# can guard with has_valid_indicators() rather than catching exceptions.
+_MIN_ROWS = 60
+
+
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute and attach all indicators.
     Operates on a copy — does not modify the original DataFrame.
     Returns the enriched DataFrame.
 
-    Requires at least 60 rows for all indicators to be non-NaN.
+    If len(df) < 60, all indicator columns are added as NaN (safe fallback).
     """
     df = df.copy()
+
+    if len(df) < _MIN_ROWS:
+        for col in _INDICATOR_COLS:
+            df[col] = float("nan")
+        return df
 
     close = df["close"]
     high  = df["high"]

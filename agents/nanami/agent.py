@@ -32,15 +32,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 load_dotenv()
 
-from core.constants import (
+from core.constants import (  # noqa: E402
     MODEL_A, MODEL_B, MODEL_C,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
 )
-from core.state_manager import StateManager
-from core.news_fetcher import minutes_to_next_high_impact_event
+from core.state_manager import StateManager  # noqa: E402
+from core.news_fetcher import minutes_to_next_high_impact_event  # noqa: E402
 
-from agents.nanami.skills import (
+from agents.nanami.skills import (  # noqa: E402
     market_data,
     indicator_engine,
     session_detector,

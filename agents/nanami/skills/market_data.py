@@ -14,7 +14,7 @@ iloc[-1] = most recently completed candle.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Tuple
 
 import pandas as pd

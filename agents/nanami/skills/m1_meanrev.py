@@ -34,7 +34,7 @@ from core.constants import (
 logger = logging.getLogger(__name__)
 
 _RR   = 3.0
-_COLS = ["rsi14", "bb_upper", "bb_mid", "bb_lower"]
+_COLS = ["rsi14", "bb_upper", "bb_lower"]
 
 
 def generate_signal(
@@ -71,7 +71,6 @@ def generate_signal(
     rsi      = row["rsi14"]
     bb_upper = row["bb_upper"]
     bb_lower = row["bb_lower"]
-    bb_mid   = row["bb_mid"]
 
     # ── BUY setup (oversold at lower BB) ───────────────────────────────────
     if rsi < M1_RSI_OVERSOLD and close <= bb_lower:
