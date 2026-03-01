@@ -27,7 +27,7 @@ from agents.nanami.skills import (
     london_breakout,
 )
 from agents.nanami.skills.session_detector import SessionContext
-from agents.nanami.skills.regime_detector import _hurst_vr
+from agents.nanami.skills.regime_detector import _return_acf
 from core.constants import (
     M5_SL_MIN, M5_SL_MAX,
     M1_SL_MIN, M1_SL_MAX,
@@ -169,54 +169,57 @@ class TestIndicatorEngine:
 
 
 # ---------------------------------------------------------------------------
-# Hurst VR unit tests
+# Return ACF unit tests
 # ---------------------------------------------------------------------------
 
-class TestHurstVR:
-    def test_insufficient_data_returns_neutral(self):
-        """Less than 60 prices → 0.5 (neutral)."""
-        prices = np.linspace(2300, 2330, 59)
-        assert _hurst_vr(prices) == 0.5
+def _ar1_prices(n: int, phi: float, sigma: float, seed: int,
+                base: float = 2300.0) -> np.ndarray:
+    """Build price series from AR1 log returns: r[t] = phi*r[t-1] + N(0,sigma)."""
+    rng = np.random.default_rng(seed)
+    r = 0.0
+    returns = []
+    for _ in range(n):
+        r = phi * r + rng.normal(0, sigma)
+        returns.append(r)
+    return base + np.cumsum(returns)
 
-    def test_exactly_min_prices_does_not_crash(self):
-        """60 prices should not raise and return a float in [0, 1]."""
-        rng = np.random.default_rng(1)
-        prices = np.cumsum(rng.normal(0, 1, 60)) + 2300.0
-        h = _hurst_vr(prices)
-        assert 0.0 <= h <= 1.0
+
+class TestReturnACF:
+    def test_insufficient_data_returns_neutral(self):
+        """Fewer than 31 prices → 0.0 (neutral)."""
+        prices = np.linspace(2300, 2330, 30)
+        assert _return_acf(prices) == 0.0
 
     def test_constant_prices_returns_neutral(self):
-        """All prices identical → variance = 0 → degenerate → 0.5."""
-        prices = np.full(120, 2350.0)
-        assert _hurst_vr(prices) == 0.5
+        """Constant prices → var = 0 → 0.0 (neutral)."""
+        prices = np.full(100, 2350.0)
+        assert _return_acf(prices) == 0.0
 
     def test_returns_float_in_range(self):
-        """Any non-degenerate input should give H in [0, 1]."""
+        """Any non-degenerate input returns a value in [-1, 1]."""
         rng = np.random.default_rng(42)
         prices = np.cumsum(rng.normal(0, 1, 150)) + 2300.0
-        h = _hurst_vr(prices)
-        assert 0.0 <= h <= 1.0
+        acf = _return_acf(prices)
+        assert -1.0 <= acf <= 1.0
 
-    def test_strong_uptrend_gives_high_h(self):
-        """
-        A strong deterministic uptrend with small noise should give H > 0.55.
-        Theory: Var[X(t+τ) - X(t)] ≈ (slope*τ)² + 2σ²
-        At large τ, the τ² term dominates → slope ≈ 2 → H ≈ 1.
-        """
-        rng = np.random.default_rng(7)
-        prices = 2300.0 + 1.0 * np.arange(120) + rng.normal(0, 0.05, 120)
-        h = _hurst_vr(prices)
-        assert h > 0.55, f"Expected H > 0.55 for strong uptrend, got {h:.3f}"
+    def test_persistent_returns_positive_acf(self):
+        """AR1 phi=+0.7: strong positive autocorrelation → ACF > +0.10."""
+        prices = _ar1_prices(300, phi=0.7, sigma=0.3, seed=42)
+        acf = _return_acf(prices)
+        assert acf > 0.10, f"Expected ACF > 0.10 for AR1 phi=0.7, got {acf:.3f}"
 
-    def test_random_walk_h_near_half(self):
-        """
-        Pure random walk: H should be roughly 0.5 (no strong bias).
-        We use a generous band (0.3–0.7) since it's stochastic.
-        """
+    def test_antipersistent_returns_negative_acf(self):
+        """AR1 phi=-0.7: strong negative autocorrelation → ACF < -0.10."""
+        prices = _ar1_prices(300, phi=-0.7, sigma=0.3, seed=99)
+        acf = _return_acf(prices)
+        assert acf < -0.10, f"Expected ACF < -0.10 for AR1 phi=-0.7, got {acf:.3f}"
+
+    def test_random_walk_near_zero_acf(self):
+        """Pure random walk (phi=0): ACF near 0, within ±0.30 band."""
         rng = np.random.default_rng(123)
         prices = np.cumsum(rng.normal(0, 1, 500)) + 2300.0
-        h = _hurst_vr(prices)
-        assert 0.3 <= h <= 0.7, f"Expected H ≈ 0.5 for random walk, got {h:.3f}"
+        acf = _return_acf(prices)
+        assert -0.30 <= acf <= 0.30, f"Expected |ACF| < 0.30 for random walk, got {acf:.3f}"
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +361,12 @@ class TestRegimeDetector:
     def test_empty_df_returns_volatile(self):
         assert regime_detector.detect_regime(pd.DataFrame()) == "VOLATILE"
 
-    def test_missing_indicators_returns_volatile(self):
+    def test_missing_adx_bb_acf_still_votes(self):
+        """Without ADX/BB columns the ACF still runs on raw close prices.
+        Result is valid — no hard VOLATILE requirement when close exists."""
         df = _candles(50)  # no indicators added
-        assert regime_detector.detect_regime(df) == "VOLATILE"
+        result = regime_detector.detect_regime(df)
+        assert result in ("TRENDING", "RANGING", "VOLATILE")
 
     def test_short_df_nan_indicators_returns_volatile(self):
         df = indicator_engine.add_indicators(_candles(10))  # too few for ADX
@@ -375,19 +381,24 @@ class TestRegimeDetector:
         assert regime_detector.detect_regime(df) == "VOLATILE"
 
     def test_all_trending_signals_give_trending(self):
-        """When ADX, Hurst, and BB expansion all agree → TRENDING."""
-        df = indicator_engine.add_indicators(_trending_candles(200))
+        """When ADX, Return ACF, and BB expansion all agree → TRENDING."""
+        # Build candles from AR1 phi=0.7 prices (persistent returns → ACF > +0.10)
+        prices = _ar1_prices(200, phi=0.7, sigma=0.3, seed=42)
+        rows = []
+        for i, c in enumerate(prices):
+            rng_ = np.random.default_rng(i)
+            noise = abs(float(rng_.normal(0, 0.25)))
+            rows.append({
+                "time": datetime(2024, 3, 1, 8, 0, 0, tzinfo=timezone.utc),
+                "open": c, "high": c + noise, "low": c - noise,
+                "close": c, "volume": 500,
+            })
+        df = indicator_engine.add_indicators(pd.DataFrame(rows))
         df = df.copy()
         last = len(df) - 1
 
-        # Override the last 120 close prices with a strong linear trend + tiny noise
-        # so Hurst VR gives H > 0.55 (variance ∝ τ² for large lags → H ≈ 1).
-        rng = np.random.default_rng(777)
-        for i, idx in enumerate(range(max(0, last - 119), last + 1)):
-            df.at[idx, "close"] = 2300.0 + 1.0 * i + rng.normal(0, 0.05)
-
-        # Force ADX trending
-        df.at[last, "adx14"] = 35.0
+        # Force ADX trending (AR1 data may not organically hit ADX > 25)
+        df.at[last, "adx14"] = 30.0
 
         # Force BB expansion: last value above the 70th percentile of last 50 bars
         bb_max = df["bb_width_pct"].iloc[-50:].max()
