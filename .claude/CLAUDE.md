@@ -432,11 +432,23 @@ PHASE 8 ⬜ PENDING    Go Live
         Also provides get_current_price() (bid/ask/spread) and
         get_asian_range() (00:00–07:00 GMT high/low for Model C).
 
-  [x] agents/nanami/skills/indicator_engine.py
-        add_indicators(df) — 18 columns: EMA9/21/50, ema21_slope, RSI14,
-        Stoch RSI (k/d), ATR14, atr_pct, ADX14, MACD(12/26/9), BB(20,2σ),
-        bb_width, bb_width_pct. Uses `ta` library.
-        _MIN_ROWS = 60 guard prevents IndexError on short DataFrames.
+  [x] agents/nanami/skills/stat_tests.py  ← QUANT UPGRADE (new)
+        rolling_hurst(): R/S std-of-differences, clips [0,1], returns 0.5 if
+          len < HURST_WINDOW. No systematic bias. lags = [2,4,8,16,32,64].
+        classify_hurst(): TRENDING >0.53, RANGING <0.47, UNDEFINED otherwise.
+        adf_stationary(): statsmodels ADF, fail-safe (non-stationary on error).
+        fit_ou(): OLS Vasicek; returns None if theta≤0 or a≥1.
+          theta=-log(a)/dt, mu=b/(1-a), sigma=std(ε)/√dt, σ_eq=σ/√(2θ).
+        ou_zscore(): (price - mu) / sigma_eq entry signal.
+        KalmanPriceFilter: constant-velocity model, state=[price, velocity].
+          R calibrated from var(diff(prices[-50:])), Q = R × 0.01.
+        kalman_velocity(): returns final velocity from fitted filter.
+
+  [x] agents/nanami/skills/indicator_engine.py  ← QUANT UPGRADE
+        add_indicators(df) — 21 columns (was 18): EMA9/21/50, ema21_slope,
+        RSI14, Stoch RSI (k/d), ATR14, atr_pct, ADX14, MACD(12/26/9),
+        BB(20,2σ), bb_width, bb_width_pct + z_score_50, kalman_price,
+        kalman_velocity (new). _MIN_ROWS = 60 guard.
         NOTE: ta returns 0.0 (not NaN) during ATR warm-up — filter with
         df["atr14"] > 0, not dropna().
 
@@ -447,37 +459,40 @@ PHASE 8 ⬜ PENDING    Go Live
         _now_utc() returns full datetime (not time) — use this as patch target
         in tests, not _now_utc_time().
 
-  [x] agents/nanami/skills/regime_detector.py
-        ROBUSTNESS REWRITE: Replaced Hurst VR (broken — overlapping-window
-        VR estimator has systematic negative bias; AR1 phi=0.7 gives H≈0.53,
-        below unreachable H>0.55 threshold) with Return ACF.
-        Return ACF = avg lag-1..3 autocorrelation of log returns. Symmetric,
-        no bias. ACF > +0.10 → trending, ACF < -0.10 → ranging. For fBm:
-        ACF(k) = 2^(2H-1) - 1.  _return_acf() exposed for unit testing.
+  [x] agents/nanami/skills/regime_detector.py  ← QUANT UPGRADE
+        Ensemble vote: ATR spike veto → VOLATILE; then Hurst (weight 2) +
+        ACF (weight 2) + BB width percentile (weight 1). Score ≥ 2 and
+        strictly highest wins. Hurst replaces ADX vote (was weight 2).
+        rolling_hurst() imported from stat_tests. _return_acf() still exposed.
 
-  [x] agents/nanami/skills/m5_momentum.py
-        Model A — M5 EMA21 pullback in trending market.
-        BUY/SELL when: HTF bias (M15 EMA50) + EMA21 wick touch +
-        RSI 40–60 + MACD histogram aligned. SL = 1×ATR clamped $5–$8.
+  [x] agents/nanami/skills/m5_momentum.py  ← QUANT UPGRADE (full rewrite)
+        Model A — Kalman velocity trend direction + z-score pullback.
+        BUY: kalman_velocity > 0 AND z_score_50 < -1.5.
+        SELL: kalman_velocity < 0 AND z_score_50 > +1.5.
+        Signature: generate_signal(df_m5, session, regime) — NO df_m15.
+        SL = 1×ATR clamped $5–$8; TP = SL×3.
 
-  [x] agents/nanami/skills/m1_meanrev.py
-        Model B — M1 BB extreme + RSI extreme (>72 / <28).
-        SL = 1.5× BB band distance, clamped $3–$5.
+  [x] agents/nanami/skills/m1_meanrev.py  ← QUANT UPGRADE (full rewrite)
+        Model B — 7-gate OU+ADF mean-reversion.
+        Gates: regime=RANGING, len≥200, valid_indicators, ADF stationary,
+        OU fit, 5≤half_life_bars≤30, |ou_z|>2.0.
+        SL = max($3, min($5, 0.5×|close−mu|)); TP = SL×3.
 
-  [x] agents/nanami/skills/london_breakout.py
-        Model C — M5 close above Asian range high / below Asian range low.
+  [x] agents/nanami/skills/london_breakout.py  ← QUANT UPGRADE (minor)
+        Model C — M5 close above Asian high / below Asian low.
+        Added MODEL_C_MIN_RANGE ($3) guard — skips if range < $3.
         SL = Asian range width clamped $6–$8.
 
   [x] agents/nanami/agent.py
         Main asyncio loop: 60s active / 300s blackout.
-        Updates session_info (session, regime, spread, Asian range,
-        minutes_to_next_news) every poll for GETO to read.
-        APPROVED signal guard: never overwrites pending GETO-approved signal.
+        _try_model_a: removed M15 fetch (Kalman velocity in M5 df replaces it).
+        Updates session_info every poll. APPROVED signal guard active.
         Writes signals as JSON to trading_state.last_signal.
 
   Commits: eed1a9a (initial build), d7f9beb (robustness: SessionContext +
-           extended indicators), 59503e0 (Hurst VR → Return ACF fix)
-  Tests:   62/62 passing (test_nanami_signals.py)
+           extended indicators), 59503e0 (Hurst VR → Return ACF fix),
+           690e9c6 (quant upgrade: stat_tests, Kalman, OU+ADF, Hurst regime)
+  Tests:   97/97 passing (test_nanami_signals.py); 223/223 total
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 3 — GETO (Risk Manager)           ✅ COMPLETE  ║

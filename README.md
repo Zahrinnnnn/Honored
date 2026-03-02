@@ -24,21 +24,21 @@
 
 ### Model A — M5 Momentum Scalp
 - **Sessions:** London Open (07:00–10:00 GMT), NY Overlap (12:00–16:00 GMT)
-- **Regime:** TRENDING only (ADX > 25)
-- **Logic:** EMA21 pullback on M5, RSI 40–60 momentum zone, MACD histogram confirming trend
-- **Risk:** SL $5–8, TP = 3× SL, max 3 trades/session
+- **Regime:** TRENDING only (Hurst > 0.53)
+- **Logic:** Kalman filter velocity determines trend direction; z-score pullback entry (|z| > 1.5 on 50-bar rolling)
+- **Risk:** SL 1× ATR clamped $5–$8, TP = 3× SL, max 3 trades/session
 
 ### Model B — M1 Mean Reversion Scalp
 - **Sessions:** Any active session
-- **Regime:** RANGING only (ADX < 20)
-- **Logic:** Bollinger Band touch + RSI extreme (>72 sell, <28 buy)
-- **Risk:** SL $3–5, TP = 3× SL, max 5 trades/session
+- **Regime:** RANGING only (Hurst < 0.47)
+- **Logic:** Ornstein-Uhlenbeck model fit + ADF stationarity gate; entry when |OU z-score| > 2.0 and half-life 5–30 bars
+- **Risk:** SL $3–$5, TP = 3× SL, max 5 trades/session
 
 ### Model C — London Open Breakout
 - **Session:** 07:00–07:30 GMT only (30-minute window)
 - **Regime:** Any — breakout overrides regime check
-- **Logic:** Asian session range (00:00–07:00 GMT) high/low break on M5 candle close
-- **Risk:** SL $6–8, TP = 3× SL, max 1 trade/day
+- **Logic:** Asian session range (00:00–07:00 GMT) high/low break on M5 close; min range $3 guard (skips false breakouts)
+- **Risk:** SL $6–$8, TP = 3× SL, max 1 trade/day
 
 ---
 
@@ -100,7 +100,7 @@ adapt        → trigger manual MAHORAGA analysis run
 |-------|-----------|
 | Commander (GOJO) | OpenClaw + DeepSeek Chat (via OpenAI-compatible API) |
 | Trading agents | Python 3.11 + asyncio |
-| Indicators | `ta` library + pandas/numpy |
+| Indicators | `ta` library + statsmodels + scipy (Hurst, Kalman, OU) |
 | Broker API | MetaApi Cloud (REST) |
 | News calendar | Finnhub free tier |
 | Shared state | SQLite (WAL mode, concurrent-safe) |
@@ -203,7 +203,7 @@ See `deploy/setup.sh` for the full automated provisioning script.
 | Phase | Agent | Status | Tests | What's inside |
 |-------|-------|--------|-------|---------------|
 | 1 | **Foundation** | ✅ Complete | — | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
-| 2 | **NANAMI** | ✅ Complete | 62/62 | Market data, indicator engine (18 cols), session/regime detection, 3 trading model signals |
+| 2 | **NANAMI** | ✅ Complete | 97/97 | Market data, indicator engine (21 cols), session/regime detection, 3 quant model signals |
 | 3 | **GETO** | ✅ Complete | 72/72 | Account monitor, consecutive tracker, DD monitor, news calendar, 11-check validator, halt logic |
 | 4 | **TOJI** | ✅ Complete | 54/54 | Lot calculator, paper/live order placer, trade monitor (SL/TP detection), trade logger, state updater |
 | 5 | **GOJO** | ⏳ Next | — | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
@@ -228,19 +228,22 @@ deploy/
 └── setup.sh           One-shot Ubuntu 22.04 provisioning script
 ```
 
-### Phase 2 — NANAMI (Analyst) — 62/62 tests
+### Phase 2 — NANAMI (Analyst) — 97/97 tests
 
 ```
 agents/nanami/
 ├── skills/
+│   ├── stat_tests.py         Quant primitives: Hurst (R/S), Kalman filter, OU model,
+│   │                         ADF stationarity, OU z-score
 │   ├── market_data.py        XAUUSD OHLCV from MetaApi (M1/M5/M15), Asian range
-│   ├── indicator_engine.py   18 indicators: EMA9/21/50, RSI14, Stoch RSI, ATR14,
-│   │                         ADX14, MACD, BB(20,2σ), bb_width_pct, atr_pct
+│   ├── indicator_engine.py   21 indicators: EMA9/21/50, RSI14, Stoch RSI, ATR14,
+│   │                         ADX14, MACD, BB(20,2σ), bb_width_pct, atr_pct,
+│   │                         z_score_50, kalman_price, kalman_velocity
 │   ├── session_detector.py   SessionContext (atomic clock read), 4 session windows
-│   ├── regime_detector.py    ATR spike veto → ADX vote → Return ACF vote → BB vote
-│   ├── m5_momentum.py        Model A — EMA21 pullback, RSI 40–60, MACD confirm
-│   ├── m1_meanrev.py         Model B — BB extreme + RSI extreme (>72/<28)
-│   └── london_breakout.py    Model C — Asian range break, 07:00–07:30 GMT only
+│   ├── regime_detector.py    ATR spike veto → Hurst vote → Return ACF vote → BB vote
+│   ├── m5_momentum.py        Model A — Kalman velocity + z-score pullback entry
+│   ├── m1_meanrev.py         Model B — OU+ADF 7-gate, |z|>2.0, half-life 5–30 bars
+│   └── london_breakout.py    Model C — Asian range break, min $3 range guard
 └── agent.py                  60s/300s async poll loop, APPROVED signal guard
 ```
 
