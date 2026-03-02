@@ -19,7 +19,7 @@ from typing import Tuple
 
 import pandas as pd
 
-from core.metaapi_client import get_connection
+from core.metaapi_client import get_account, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,8 @@ async def get_candles(timeframe: str, count: int = 200) -> pd.DataFrame:
     count = max(count, _MIN_CANDLES.get(timeframe, count))
 
     try:
-        connection = await get_connection()
-        raw = await connection.get_historical_candles(
+        account = await get_account()
+        raw = await account.get_historical_candles(
             SYMBOL,
             timeframe,
             datetime.now(timezone.utc),

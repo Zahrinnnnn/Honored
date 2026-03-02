@@ -102,7 +102,7 @@ def adf_stationary(
     """
     Augmented Dickey-Fuller test for stationarity.
 
-    Uses statsmodels adfuller with maxlags=20, autolag='AIC'.
+    Uses statsmodels adfuller with maxlag=20, autolag='AIC'.
     Fail-safe: returns {stationary: False} on any error so that
     the Model B gate stays closed rather than opening on bad data.
 
@@ -116,7 +116,7 @@ def adf_stationary(
     try:
         from statsmodels.tsa.stattools import adfuller  # lazy — heavy import
 
-        result  = adfuller(series, maxlags=20, autolag="AIC")
+        result  = adfuller(series, maxlag=20, autolag="AIC")
         p_value = float(result[1])
         is_stat = p_value < significance
         return {

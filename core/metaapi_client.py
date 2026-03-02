@@ -13,6 +13,7 @@ class MetaApiClient:
     def __init__(self):
         self._api: Optional[MetaApi] = None
         self._connection = None
+        self._account = None
         self._lock = asyncio.Lock()
 
     async def get_connection(self, retries: int = 5):
@@ -20,6 +21,13 @@ class MetaApiClient:
             if self._connection is not None:
                 return self._connection
             return await self._connect(retries)
+
+    async def get_account(self, retries: int = 5):
+        async with self._lock:
+            if self._account is not None:
+                return self._account
+            await self._connect(retries)
+            return self._account
 
     async def _connect(self, retries: int):
         token      = os.environ["META_API_TOKEN"]
@@ -35,6 +43,7 @@ class MetaApiClient:
                 await connection.connect()
                 await connection.wait_synchronized()
                 self._connection = connection
+                self._account    = account
                 logger.info("MetaApi connected and synchronized")
                 return self._connection
             except Exception as exc:
@@ -49,6 +58,7 @@ class MetaApiClient:
         if self._connection:
             await self._connection.close()
             self._connection = None
+            self._account    = None
             logger.info("MetaApi connection closed")
 
 
@@ -58,6 +68,10 @@ _client = MetaApiClient()
 
 async def get_connection(retries: int = 5):
     return await _client.get_connection(retries)
+
+
+async def get_account(retries: int = 5):
+    return await _client.get_account(retries)
 
 
 async def close_connection():
