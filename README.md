@@ -297,6 +297,27 @@ agents/toji/
 **PnL formula:** `pnl = lot_size × price_diff_USD`
 (derives from `lot = risk_amount / sl_distance`; 1 lot = $1/dollar on HFM Cents)
 
+### Phase 5 — GOJO (Commander) ⏳ Next
+
+```
+gojo/
+├── SOUL.md                        JARVIS personality — witty, dry, confident, never robotic
+├── AGENTS.md                      Command routing rules
+├── IDENTITY.md                    Name, emoji, theme
+├── HEARTBEAT.md                   Polls alert_queue every 60s; delivers pending alerts to WhatsApp
+└── skills/honored-trading/
+    ├── SKILL.md                   OpenClaw skill definition (frontmatter + workflow)
+    └── scripts/
+        ├── get_status.py          System + account snapshot → JSON
+        ├── get_report.py          Trade history (--days N) → JSON
+        ├── set_flag.py            Set pause_flag / halt_flag → JSON
+        ├── get_signal_reason.py   Last signal + GETO decision → JSON
+        └── trigger_mahoraga.py    Kick MAHORAGA analysis run → JSON
+```
+
+All scripts: accept `--json`, read `HONORED_DB` env var, return `{"status":"ok","data":{...}}`.
+GOJO is DeepSeek-chat via OpenClaw; speaks JARVIS-style (witty, never robotic).
+
 ---
 
 ## Safety

@@ -484,12 +484,36 @@ PHASE 8 ⬜ PENDING    Go Live
 ╚══════════════════════════════════════════════════════╝
 
   [x] agents/geto/skills/account_monitor.py
+        Thin async wrapper: reads balance/equity/peak_balance/current_dd_pct/
+        open_positions from account table. Safe defaults on missing row.
+
   [x] agents/geto/skills/consecutive_tracker.py
+        get_consecutive_losses() → int. is_soft_halt_triggered() → bool.
+        Reads from trading_state.consecutive_losses via StateManager.
+
   [x] agents/geto/skills/dd_monitor.py
+        get_drawdown_pct() → float. is_emergency_halt_triggered() → bool.
+        Threshold: current_dd_pct >= 50.0.
+
   [x] agents/geto/skills/news_calendar.py
+        Primary: reads minutes_to_next_news from session_info (NANAMI writes it).
+        Fallback: lazy-imports core.news_fetcher (avoids import errors in tests).
+        Returns 0.0 on any failure → is_news_clear() returns False (fail-safe).
+
   [x] agents/geto/skills/trade_validator.py   ← 11 checks (10+1 split flags)
+        _ALLOWED_SESSIONS = set(ACTIVE_SESSIONS) | {"LONDON_BREAKOUT"}
+        (LONDON_BREAKOUT added for Model C — model_priority_ok enforces exclusivity)
+        ValidationResult dataclass: approved, checks dict, fail_reason, signal.
+        _regime_ok(): MODEL_A→TRENDING, MODEL_B→RANGING, MODEL_C→any.
+
   [x] agents/geto/agent.py
-  → TEST: 72/72 passing — test_geto_validation.py
+        5s poll. _monitor_halt_conditions() first (DD→emergency halt, losses→soft halt).
+        Then reads PENDING signals, runs validate(), writes APPROVED/REJECTED to
+        last_risk_decision and last_signal.status. Pushes halt alerts to alert_queue.
+
+  Commits: 60631b9 (initial build), 1223f8e (asyncio.run() fix + README),
+           8227b3f (CLAUDE.md robustness docs)
+  Tests:   72/72 passing (test_geto_validation.py)
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 4 — TOJI (Executor)              ✅ COMPLETE  ║
@@ -529,7 +553,9 @@ PHASE 8 ⬜ PENDING    Go Live
         MetaApi optional in paper mode (for price reads). Fails gracefully if unavailable.
 
   [x] core/state_manager.py — added get_open_trades() method.
-  → TEST: 54/54 passing — tests/test_toji_execution.py
+
+  Commit: 89eb143 (build + GETO ruff fixes)
+  Tests:  54/54 passing (test_toji_execution.py)
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 5 — GOJO (Commander)              ⬜ PENDING  ║
