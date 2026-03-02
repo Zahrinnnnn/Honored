@@ -1,36 +1,50 @@
-import os
+"""
+news_fetcher.py — Economic calendar via ForexFactory XML feed.
+
+No API key required. ForexFactory provides a free weekly XML calendar.
+Feed URL: https://nfs.faireconomy.media/ff_calendar_thisweek.xml
+Times are in US Eastern Time (EST/EDT) — converted to UTC internally.
+Cache refreshes every CACHE_TTL_HOURS (4 h) to pick up intraday updates.
+
+Fail-safe: any fetch/parse error returns a blocking sentinel, causing
+is_news_clear() to return False and block all trades.
+"""
+
 import json
 import logging
-import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
-from dotenv import load_dotenv
+from zoneinfo import ZoneInfo
+
+import requests
+
 from core.constants import NEWS_BLACKOUT_MINUTES
 
-load_dotenv()
-logger = logging.getLogger(__name__)
+logger    = logging.getLogger(__name__)
+_FF_URL   = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+_CACHE    = Path("news_cache.json")
+_CACHE_TTL_HOURS = 4
+_EASTERN  = ZoneInfo("America/New_York")
 
-_FINNHUB_URL = "https://finnhub.io/api/v1/calendar/economic"
-_CACHE_FILE  = Path("news_cache.json")
 
-
-def _today_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
+# ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
 
 def _load_cache() -> dict:
     try:
-        if _CACHE_FILE.exists():
-            return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+        if _CACHE.exists():
+            return json.loads(_CACHE.read_text(encoding="utf-8"))
     except Exception:
         pass
     return {}
 
 
-def _save_cache(data: dict):
+def _save_cache(data: dict) -> None:
     try:
-        _CACHE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        _CACHE.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to save news cache: %s", exc)
 
@@ -39,66 +53,132 @@ def _blocking_sentinel() -> List[dict]:
     return [{"_blocking": True, "event": "API_UNAVAILABLE"}]
 
 
+# ---------------------------------------------------------------------------
+# Time parsing
+# ---------------------------------------------------------------------------
+
+def _parse_hhmm(time_str: str):
+    """
+    Parse ForexFactory time string to (hour, minute) in Eastern Time.
+    Returns None for 'All Day', 'Tentative', or unparseable strings.
+
+    Examples:
+        "3:00pm"  -> (15, 0)
+        "12:00am" -> (0, 0)   (midnight)
+        "12:00pm" -> (12, 0)  (noon)
+    """
+    s = time_str.strip().lower()
+    if not s or s in ("all day", "tentative"):
+        return None
+    is_pm = s.endswith("pm")
+    is_am = s.endswith("am")
+    if not is_pm and not is_am:
+        return None
+    try:
+        h, m = map(int, s[:-2].strip().split(":"))
+        if is_pm and h != 12:
+            h += 12
+        elif is_am and h == 12:
+            h = 0
+        return (h, m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _to_utc(date_str: str, time_str: str):
+    """
+    Convert ForexFactory date + time to UTC datetime.
+    date_str: "03-02-2026" (MM-DD-YYYY)
+    time_str: "3:00pm" (Eastern Time)
+    Returns None on any parse failure.
+    """
+    hm = _parse_hhmm(time_str)
+    if hm is None:
+        return None
+    try:
+        d   = datetime.strptime(date_str.strip(), "%m-%d-%Y")
+        naive = d.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
+        return naive.replace(tzinfo=_EASTERN).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def fetch_high_impact_events() -> List[dict]:
     """
-    Returns today's high-impact economic events from Finnhub.
-    Caches result for the day (refreshes at UTC midnight).
-    Falls back to a blocking sentinel if the API is unreachable —
-    which causes is_news_clear() to return False and block all trades.
+    Returns this week's high-impact economic events from ForexFactory.
+    Caches result for CACHE_TTL_HOURS. Falls back to blocking sentinel on error.
+    Each event dict has: event (str), country (str), time (ISO UTC str), impact (str).
     """
-    today = _today_utc()
-    cache = _load_cache()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cache  = _load_cache()
 
-    if cache.get("date") == today and "events" in cache:
+    if cache.get("fetched_at", 0) + _CACHE_TTL_HOURS * 3600 > now_ts and "events" in cache:
         return cache["events"]
-
-    api_key = os.environ.get("FINNHUB_API_KEY", "")
-    if not api_key:
-        logger.error("FINNHUB_API_KEY not set — blocking all trades (safety default)")
-        return _blocking_sentinel()
 
     try:
         resp = requests.get(
-            _FINNHUB_URL,
-            params={"token": api_key, "from": today, "to": today},
+            _FF_URL,
             timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
         resp.raise_for_status()
-        raw = resp.json().get("economicCalendar", [])
-        events = [e for e in raw if str(e.get("impact", "")).lower() == "high"]
-        _save_cache({"date": today, "events": events})
-        logger.info("Fetched %d high-impact events for %s", len(events), today)
+        root = ET.fromstring(resp.content.decode("windows-1252", errors="replace"))
+
+        events = []
+        for ev in root.findall("event"):
+            if (ev.findtext("impact") or "").strip().lower() != "high":
+                continue
+            date_str = (ev.findtext("date")    or "").strip()
+            time_str = (ev.findtext("time")    or "").strip()
+            title    = (ev.findtext("title")   or "").strip()
+            country  = (ev.findtext("country") or "").strip()
+            dt_utc   = _to_utc(date_str, time_str)
+            if dt_utc is None:
+                continue
+            events.append({
+                "event":   title,
+                "country": country,
+                "time":    dt_utc.isoformat(),
+                "impact":  "high",
+            })
+
+        _save_cache({"fetched_at": now_ts, "events": events})
+        logger.info("ForexFactory: %d high-impact events this week", len(events))
         return events
 
-    except requests.RequestException as exc:
-        logger.error("Finnhub API error: %s — blocking all trades (safety default)", exc)
+    except Exception as exc:
+        logger.error("ForexFactory feed error: %s — blocking all trades (safety default)", exc)
         return _blocking_sentinel()
 
 
 def minutes_to_next_high_impact_event() -> float:
     """
     Returns minutes until the next high-impact event.
-    Returns 0.0 if currently inside a blackout window or API is unavailable.
-    Returns 999.0 if no events remain today.
+    Returns 0.0 if currently inside a blackout window or feed unavailable.
+    Returns 999.0 if no more events today.
     """
     events = fetch_high_impact_events()
 
     if any(e.get("_blocking") for e in events):
         return 0.0
 
-    now = datetime.now(timezone.utc)
+    now     = datetime.now(timezone.utc)
     closest = 999.0
 
     for event in events:
-        raw_time = event.get("time") or event.get("releaseTime") or event.get("datetime")
+        raw_time = event.get("time")
         if not raw_time:
             continue
         try:
-            event_dt      = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
-            diff_minutes  = (event_dt - now).total_seconds() / 60.0
+            event_dt     = datetime.fromisoformat(raw_time)
+            diff_minutes = (event_dt - now).total_seconds() / 60.0
 
             if abs(diff_minutes) <= NEWS_BLACKOUT_MINUTES:
-                return 0.0                          # inside blackout window right now
+                return 0.0
 
             if diff_minutes > 0:
                 closest = min(closest, diff_minutes)
@@ -114,7 +194,7 @@ def is_news_clear() -> bool:
     return minutes_to_next_high_impact_event() > NEWS_BLACKOUT_MINUTES
 
 
-def refresh_cache():
-    """Force-refresh the news cache regardless of date."""
-    _CACHE_FILE.unlink(missing_ok=True)
+def refresh_cache() -> List[dict]:
+    """Force-refresh the news cache regardless of TTL."""
+    _CACHE.unlink(missing_ok=True)
     return fetch_high_impact_events()
