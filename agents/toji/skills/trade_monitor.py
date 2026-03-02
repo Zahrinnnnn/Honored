@@ -13,11 +13,11 @@ Live mode
     The broker manages SL/TP execution; TOJI detects closed positions
     by comparing MetaApi positions against our open trades in SQLite.
 
-PnL formula (XAUUSD on HFM Cents account)
-    MetaApi reports balance in USD. The lot formula:
-        lot = risk_amount / sl_distance
-    implies: PnL per lot per USD price move = $1.00
-    ∴  PnL = lot_size × price_diff_USD
+PnL formula
+    PnL = lot_size × price_diff_USD × XAUUSD_POINT_VALUE
+    CENTS (default): XAUUSD_POINT_VALUE=1  → 1 lot = $1/dollar move
+    STANDARD:        XAUUSD_POINT_VALUE=100 → 1 lot = $100/dollar move
+    Dollar P&L is identical for both types since lot size scales inversely.
 
 Public API
 ──────────
@@ -29,6 +29,8 @@ get_live_closed_positions(connection, open_trade_ids) → list[dict]
 
 import logging
 from typing import Optional
+
+from core.constants import XAUUSD_POINT_VALUE
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +90,8 @@ def calculate_pnl(trade: dict, exit_price: float) -> float:
     """
     Calculate realised P&L in USD for a closed XAUUSD trade.
 
-    Formula: PnL = lot_size × price_diff_USD
-    This derives from the lot calculation: lot = risk_amount / sl_distance
-    which requires PnL per lot per dollar move = $1.
+    Formula: PnL = lot_size × price_diff_USD × XAUUSD_POINT_VALUE
+    Controlled by ACCOUNT_TYPE env var (CENTS=1, STANDARD=100).
 
     Args:
         trade:      Open trade record from the trades table.
@@ -108,7 +109,7 @@ def calculate_pnl(trade: dict, exit_price: float) -> float:
     else:
         price_diff = entry_price - exit_price
 
-    return round(lot_size * price_diff, 2)
+    return round(lot_size * price_diff * XAUUSD_POINT_VALUE, 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

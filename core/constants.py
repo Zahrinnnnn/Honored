@@ -1,3 +1,19 @@
+import os
+
+# ---------------------------------------------------------------------------
+# Account type — XAUUSD contract multiplier
+# ---------------------------------------------------------------------------
+# CENTS    : HFM Cents account — MetaApi reports lot values where
+#            1 lot = $1 per $1 price move.  Used for live trading.
+# STANDARD : Standard MT5 demo/paper account — 1 lot = 100 oz XAUUSD =
+#            $100 per $1 price move.  Used for paper testing.
+#
+# Set ACCOUNT_TYPE=STANDARD in .env when paper testing on a standard demo.
+# Leave unset (or CENTS) for live HFM Cents trading.
+#
+ACCOUNT_TYPE       = os.getenv("ACCOUNT_TYPE", "CENTS").upper()
+XAUUSD_POINT_VALUE = 100 if ACCOUNT_TYPE == "STANDARD" else 1
+
 # Risk parameters
 RISK_PER_TRADE_PCT       = 0.10
 MAX_DRAWDOWN_PCT         = 0.50
