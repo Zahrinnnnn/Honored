@@ -25,6 +25,7 @@ import pandas as pd
 from core.constants import (
     MODEL_C,
     BREAKOUT_SL_MIN, BREAKOUT_SL_MAX,
+    MODEL_C_MIN_RANGE,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,11 @@ def generate_signal(
     """
     if asian_high <= 0 or asian_low <= 0 or asian_high <= asian_low:
         logger.warning("Model C: invalid Asian range (high=%.2f, low=%.2f)", asian_high, asian_low)
+        return None
+
+    if (asian_high - asian_low) < MODEL_C_MIN_RANGE:
+        logger.debug("Model C: range too narrow (%.2f < $%.1f) — fake breakout risk",
+                     asian_high - asian_low, MODEL_C_MIN_RANGE)
         return None
 
     if df_m5.empty:

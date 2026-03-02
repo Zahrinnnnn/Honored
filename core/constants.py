@@ -63,6 +63,30 @@ NANAMI_POLL_BLACKOUT  = 300
 TOJI_MONITOR_INTERVAL = 30
 ALERT_POLL_INTERVAL   = 60
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Quant upgrade — regime detection and signal generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Regime detection — Hurst exponent (replaces ADX binary voter)
+HURST_TRENDING_THRESHOLD = 0.53   # H > 0.53 → persistent / trending
+HURST_RANGING_THRESHOLD  = 0.47   # H < 0.47 → anti-persistent / ranging
+HURST_WINDOW             = 200    # M5 bars required for reliable Hurst estimate
+
+# Model A — Kalman HTF bias + z-score pullback entry
+MODEL_A_KALMAN_Q_SCALE  = 0.01   # Kalman process noise = R × 0.01 (smooth filter)
+MODEL_A_ZSCORE_ENTRY    = 1.5    # |z| > 1.5 = meaningful pullback below/above mean
+MODEL_A_ZSCORE_LOOKBACK = 50     # bars for rolling mean/std of z-score
+
+# Model B — Ornstein-Uhlenbeck mean reversion entry (replaces BB+RSI)
+MODEL_B_OU_ENTRY_ZSCORE  = 2.0   # |z_ou| > 2.0 to enter
+MODEL_B_OU_LOOKBACK      = 200   # M1 bars for OU parameter fit
+MODEL_B_MIN_HALF_LIFE    = 5     # bars: reversion too fast → noise
+MODEL_B_MAX_HALF_LIFE    = 30    # bars: reversion too slow → untradeable
+MODEL_B_ADF_SIGNIFICANCE = 0.05  # ADF p-value threshold for stationarity
+
+# Model C — minimum Asian range width filter
+MODEL_C_MIN_RANGE = 3.0          # USD: range < $3 → skip (fake breakout risk)
+
 # Model name constants
 MODEL_A = "M5_MOMENTUM"
 MODEL_B = "M1_MEANREV"

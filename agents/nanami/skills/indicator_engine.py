@@ -38,11 +38,15 @@ Below 60 rows all indicator columns are added as NaN — callers guard with
 has_valid_indicators() rather than catching exceptions.
 """
 
+import numpy as np
 import pandas as pd
 import ta
 import ta.trend
 import ta.momentum
 import ta.volatility
+
+from agents.nanami.skills.stat_tests import KalmanPriceFilter
+from core.constants import MODEL_A_ZSCORE_LOOKBACK
 
 
 _INDICATOR_COLS = (
@@ -52,6 +56,8 @@ _INDICATOR_COLS = (
     "adx14",
     "macd", "macd_signal", "macd_hist",
     "bb_upper", "bb_mid", "bb_lower", "bb_width", "bb_width_pct",
+    "z_score_50",
+    "kalman_price", "kalman_velocity",
 )
 
 # ta library raises IndexError on datasets smaller than the indicator window.
@@ -131,6 +137,21 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # Derived BB metrics
     df["bb_width"]     = df["bb_upper"] - df["bb_lower"]
     df["bb_width_pct"] = df["bb_width"] / close * 100.0  # normalised
+
+    # ── Z-score (50-bar rolling, for Model A pullback entry) ─────────────────
+    _roll_mean = close.rolling(MODEL_A_ZSCORE_LOOKBACK).mean()
+    _roll_std  = close.rolling(MODEL_A_ZSCORE_LOOKBACK).std().replace(0, np.nan)
+    df["z_score_50"] = (close - _roll_mean) / _roll_std
+
+    # ── Kalman filter — price + velocity (for Model A HTF bias) ──────────────
+    _prices = close.values
+    _tail   = _prices[-50:] if len(_prices) >= 51 else _prices
+    _r      = float(np.var(np.diff(_tail)))
+    _r      = max(_r, 1e-8)
+    _kf     = KalmanPriceFilter(r=_r)
+    _kf_prices, _kf_vels = _kf.fit(_prices)
+    df["kalman_price"]    = _kf_prices
+    df["kalman_velocity"] = _kf_vels
 
     return df
 

@@ -1,22 +1,25 @@
 """
 m1_meanrev.py — NANAMI skill
 
-Model B — M1 Mean Reversion Scalp
+Model B — M1 Mean Reversion Scalp (Quant Upgrade)
 
 Entry logic:
-  BUY:  - RSI < M1_RSI_OVERSOLD  (28) — extreme oversold
-        - Close ≤ Bollinger Band lower — price at statistical extreme
+  BUY:  OU z-score < -MODEL_B_OU_ENTRY_ZSCORE (price > 2σ below OU mean)
+  SELL: OU z-score > +MODEL_B_OU_ENTRY_ZSCORE (price > 2σ above OU mean)
 
-  SELL: - RSI > M1_RSI_OVERBOUGHT (72) — extreme overbought
-        - Close ≥ Bollinger Band upper — price at statistical extreme
+  Gates (in order — all must pass):
+    1. regime == "RANGING"
+    2. len(df) >= MODEL_B_OU_LOOKBACK (200 M1 bars)
+    3. ATR is valid (post-warm-up)
+    4. ADF test confirms stationarity (p < 0.05) — fail-safe if ADF errors
+    5. fit_ou() succeeds (θ > 0 — genuine mean reversion)
+    6. half_life_bars in [MODEL_B_MIN_HALF_LIFE, MODEL_B_MAX_HALF_LIFE] (5–30 bars)
+    7. |z_ou| > MODEL_B_OU_ENTRY_ZSCORE (2.0)
 
 Sessions: Any active session (LONDON_OPEN, NY_OVERLAP, NY_CLOSE)
-Regime:   RANGING only (ADX < 20)
-SL:       1.5 × distance(close, BB band), clamped to [M1_SL_MIN, M1_SL_MAX] = [$3, $5]
+Regime:   RANGING only
+SL:       0.5 × |close - ou_mu|, clamped to [M1_SL_MIN, M1_SL_MAX] = [$3, $5]
 TP:       SL × 3 (fixed 1:3 RR)
-
-Mean-reversion rationale: SL is placed beyond the outer BB band
-to allow for one more extreme before reversing.
 """
 
 import uuid
@@ -27,14 +30,18 @@ import pandas as pd
 
 from core.constants import (
     MODEL_B,
-    M1_RSI_OVERBOUGHT, M1_RSI_OVERSOLD,
+    MODEL_B_OU_ENTRY_ZSCORE,
+    MODEL_B_OU_LOOKBACK,
+    MODEL_B_MIN_HALF_LIFE,
+    MODEL_B_MAX_HALF_LIFE,
     M1_SL_MIN, M1_SL_MAX,
 )
+from agents.nanami.skills.indicator_engine import has_valid_indicators
+from agents.nanami.skills.stat_tests import adf_stationary, fit_ou, ou_zscore
 
 logger = logging.getLogger(__name__)
 
-_RR   = 3.0
-_COLS = ["rsi14", "bb_upper", "bb_lower"]
+_RR = 3.0
 
 
 def generate_signal(
@@ -53,34 +60,56 @@ def generate_signal(
     Returns:
         Signal dict or None if no setup is found.
     """
+    # ── Gate 1: regime ───────────────────────────────────────────────────────
     if regime != "RANGING":
         return None
 
-    if len(df_m1) < 30:
-        logger.debug("Model B: insufficient M1 candle data")
+    # ── Gate 2: sufficient bars for OU fitting ───────────────────────────────
+    if len(df_m1) < MODEL_B_OU_LOOKBACK:
+        logger.debug("Model B: insufficient M1 data (%d < %d bars)",
+                     len(df_m1), MODEL_B_OU_LOOKBACK)
         return None
 
-    row = df_m1.iloc[-1]
+    last = df_m1.iloc[-1]
 
-    # Guard: all required indicators must be non-NaN
-    if any(pd.isna(row.get(col)) for col in _COLS):
-        logger.debug("Model B: NaN in required M1 indicators")
+    # ── Gate 3: ATR warm-up ──────────────────────────────────────────────────
+    if not has_valid_indicators(last, ["atr14"]):
+        logger.debug("Model B: ATR not warmed up")
         return None
 
-    close    = row["close"]
-    rsi      = row["rsi14"]
-    bb_upper = row["bb_upper"]
-    bb_lower = row["bb_lower"]
+    prices = df_m1["close"].values[-MODEL_B_OU_LOOKBACK:]
+    close  = float(last["close"])
 
-    # ── BUY setup (oversold at lower BB) ───────────────────────────────────
-    if rsi < M1_RSI_OVERSOLD and close <= bb_lower:
-        sl_distance = _sl_distance(close, bb_lower, "BUY")
-        return _build("BUY", close, sl_distance, session, regime, rsi, bb_lower, bb_upper)
+    # ── Gate 4: ADF stationarity ─────────────────────────────────────────────
+    adf = adf_stationary(prices)
+    if not adf["stationary"]:
+        logger.debug("Model B: ADF gate — not stationary (p=%.4f, verdict=%s)",
+                     adf["p_value"], adf["verdict"])
+        return None
 
-    # ── SELL setup (overbought at upper BB) ────────────────────────────────
-    if rsi > M1_RSI_OVERBOUGHT and close >= bb_upper:
-        sl_distance = _sl_distance(close, bb_upper, "SELL")
-        return _build("SELL", close, sl_distance, session, regime, rsi, bb_lower, bb_upper)
+    # ── Gate 5: OU fit ───────────────────────────────────────────────────────
+    ou = fit_ou(prices, dt=1.0 / 1440)
+    if ou is None:
+        logger.debug("Model B: fit_ou returned None (no mean reversion)")
+        return None
+
+    # ── Gate 6: half-life bounds ─────────────────────────────────────────────
+    hl = ou["half_life_bars"]
+    if not (MODEL_B_MIN_HALF_LIFE <= hl <= MODEL_B_MAX_HALF_LIFE):
+        logger.debug("Model B: half_life=%.1f bars outside [%d, %d] — skipped",
+                     hl, MODEL_B_MIN_HALF_LIFE, MODEL_B_MAX_HALF_LIFE)
+        return None
+
+    # ── Gate 7: OU z-score entry ─────────────────────────────────────────────
+    z = ou_zscore(close, ou)
+
+    if z < -MODEL_B_OU_ENTRY_ZSCORE:
+        sl_distance = _sl_distance(close, ou["mu"])
+        return _build("BUY", close, sl_distance, session, regime, z, ou)
+
+    if z > MODEL_B_OU_ENTRY_ZSCORE:
+        sl_distance = _sl_distance(close, ou["mu"])
+        return _build("SELL", close, sl_distance, session, regime, z, ou)
 
     return None
 
@@ -89,14 +118,12 @@ def generate_signal(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _sl_distance(close: float, bb_band: float, direction: str) -> float:
+def _sl_distance(close: float, ou_mu: float) -> float:
     """
-    SL = 1.5 × |close - BB band|, clamped to [M1_SL_MIN, M1_SL_MAX].
-    Placing SL beyond the band gives room for one further extreme.
+    SL = 0.5 × |close - μ_ou|, clamped to [M1_SL_MIN, M1_SL_MAX].
+    The floor ensures the trade is viable given spread constraints.
     """
-    raw = abs(close - bb_band) * 1.5
-    # Floor at minimum in case BB band is very tight
-    raw = max(raw, (M1_SL_MIN + M1_SL_MAX) / 2.0) if raw < M1_SL_MIN else raw
+    raw = 0.5 * abs(close - ou_mu)
     return max(M1_SL_MIN, min(M1_SL_MAX, raw))
 
 
@@ -106,9 +133,8 @@ def _build(
     sl_distance: float,
     session: str,
     regime: str,
-    rsi: float,
-    bb_lower: float,
-    bb_upper: float,
+    z: float,
+    ou: dict,
 ) -> dict:
     tp_distance = sl_distance * _RR
     if direction == "BUY":
@@ -129,7 +155,7 @@ def _build(
         "session":     session,
         "regime":      regime,
         "reason":      (
-            f"BB touch | RSI={rsi:.1f} | "
-            f"BB_lower={bb_lower:.2f}  BB_upper={bb_upper:.2f}"
+            f"OU mean-rev | z={z:.2f} | mu={ou['mu']:.2f} "
+            f"| half_life={ou['half_life_bars']:.1f} bars"
         ),
     }

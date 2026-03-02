@@ -3,48 +3,32 @@ regime_detector.py — NANAMI skill
 
 Multi-factor ensemble regime classifier for XAUUSD.
 
-Architecture decision (research summary)
-─────────────────────────────────────────
-• HMM / GMM / Wasserstein clustering — REJECTED: require pre-training on
-  historical data; non-stationarity of gold (driven by Fed policy,
-  geopolitical risk) makes learned transition matrices stale quickly.
-• Kalman Filter — useful for trend smoothing, not regime classification.
-• Hurst Exponent (Variance Ratio) — EVALUATED, REPLACED:
-  The VR overlapping-window estimator has a systematic negative bias on
-  typical stochastic market data (random walk with drift), making the
-  H > 0.55 TRENDING threshold effectively unreachable (even AR1 phi=0.7
-  gives H ≈ 0.53 on 60-bar windows).
-• Return Autocorrelation (lag-1..3 average) — SELECTED as secondary signal.
-  Directly measures persistence / anti-persistence in log returns without
-  the VR bias. Symmetric, more sensitive on 30–60 bar windows, and aligns
-  cleanly with the fBm theoretical model:
-    ACF(k) = 2^(2H-1) - 1   →   ACF > 0 ↔ H > 0.5 (trending)
-                                  ACF < 0 ↔ H < 0.5 (ranging)
-  Threshold ±0.10 corresponds to H ≈ 0.53 / 0.47 (conservative, ≈ 0.8σ
-  above/below random-walk null for n = 60 observations).
-
 Ensemble design
 ───────────────
 Priority 1 — ATR spike VETO (immediate VOLATILE, no vote)
-  If current ATR > ATR_VOLATILE_MULTIPLIER × 20-bar mean ATR, we are in a
-  volatility spike (e.g. news event). Return VOLATILE immediately.
+  If current ATR > ATR_VOLATILE_MULTIPLIER × 20-bar mean ATR → VOLATILE.
 
-Priority 2 — Voting (each factor casts a score):
-  ADX (weight 2)
-    adx > 25  → +2 trending
-    adx < 20  → +2 ranging
+Priority 2 — Voting (each factor casts a weighted score):
+  Hurst exponent (weight 2) — computed via rolling_hurst()
+    H > 0.53 → +2 trending   (persistent process)
+    H < 0.47 → +2 ranging    (anti-persistent process)
+    Otherwise → no vote; 0.5 (neutral) on insufficient data
 
   Return Autocorrelation — avg lag 1..3 on last 60 returns (weight 2)
-    acf > +0.10 → +2 trending   (persistent returns — momentum works)
-    acf < -0.10 → +2 ranging    (anti-persistent — mean-reversion works)
+    acf > +0.10 → +2 trending   (persistent returns)
+    acf < -0.10 → +2 ranging    (anti-persistent returns)
     neutral (|acf| ≤ 0.10) → no vote
 
   BB Width Percentile (weight 1)
-    bb_width_pct < 30th percentile → +1 ranging  (BB squeeze → coiling)
-    bb_width_pct > 70th percentile → +1 trending  (BB expansion → breakout)
+    bb_width_pct < 30th pct → +1 ranging  (BB squeeze → coiling)
+    bb_width_pct > 70th pct → +1 trending (BB expansion → breakout)
 
 Decision: regime with score ≥ 2 AND strictly highest wins.
            Ties or insufficient evidence → VOLATILE (safe default, no trade).
+
+Hurst replaces the previous ADX vote (weight 2).
+ADX was a lagging indicator biased by drift; Hurst directly measures
+the statistical persistence of the price process.
 
 Public API
 ──────────
@@ -57,11 +41,8 @@ import logging
 import numpy as np
 import pandas as pd
 
-from core.constants import (
-    ADX_TRENDING_THRESHOLD,
-    ADX_RANGING_THRESHOLD,
-    ATR_VOLATILE_MULTIPLIER,
-)
+from core.constants import ATR_VOLATILE_MULTIPLIER, HURST_WINDOW
+from agents.nanami.skills.stat_tests import rolling_hurst, classify_hurst
 
 logger = logging.getLogger(__name__)
 
@@ -180,24 +161,25 @@ def detect_regime(df: pd.DataFrame) -> str:
     trending_score = 0
     ranging_score  = 0
 
-    # ── Step 2: ADX vote (weight = 2) ────────────────────────────────────
-    if "adx14" in df.columns:
-        adx = df["adx14"].iloc[-1]
-        if not pd.isna(adx):
-            if adx > ADX_TRENDING_THRESHOLD:
-                trending_score += 2
-                logger.debug("ADX=%.1f > %d → +2 trending", adx, ADX_TRENDING_THRESHOLD)
-            elif adx < ADX_RANGING_THRESHOLD:
-                ranging_score += 2
-                logger.debug("ADX=%.1f < %d → +2 ranging", adx, ADX_RANGING_THRESHOLD)
-            else:
-                logger.debug("ADX=%.1f in dead zone (%.0f–%.0f) → neutral",
-                             adx, ADX_RANGING_THRESHOLD, ADX_TRENDING_THRESHOLD)
+    # ── Step 2: Hurst exponent vote (weight = 2) ──────────────────────────
+    # Computed from the M5 close series.  Returns 0.5 (neutral) when there
+    # are fewer than HURST_WINDOW bars — contributes nothing in that case.
+    close_arr = df["close"].values
+    h = rolling_hurst(close_arr, window=HURST_WINDOW)
+    hurst_label = classify_hurst(h)
+
+    if hurst_label == "TRENDING":
+        trending_score += 2
+        logger.debug("Hurst=%.3f → +2 trending", h)
+    elif hurst_label == "RANGING":
+        ranging_score += 2
+        logger.debug("Hurst=%.3f → +2 ranging", h)
+    else:
+        logger.debug("Hurst=%.3f → neutral (UNDEFINED)", h)
 
     # ── Step 3: Return ACF vote (weight = 2) ──────────────────────────────
     # Average lag-1..3 autocorrelation of log returns (last _ACF_LOOKBACK bars).
     # Positive ACF → persistent (trending); negative → anti-persistent (ranging).
-    close_arr = df["close"].values
     lookback  = min(_ACF_LOOKBACK, len(close_arr))
     acf = _return_acf(close_arr[-lookback:])
 
@@ -229,8 +211,8 @@ def detect_regime(df: pd.DataFrame) -> str:
 
     # ── Step 5: Decision ──────────────────────────────────────────────────
     logger.info(
-        "Regime vote — trending=%d  ranging=%d  (min_score=%d)  ACF=%.3f",
-        trending_score, ranging_score, _MIN_SCORE, acf,
+        "Regime vote — trending=%d  ranging=%d  (min_score=%d)  Hurst=%.3f  ACF=%.3f",
+        trending_score, ranging_score, _MIN_SCORE, h, acf,
     )
 
     if trending_score >= _MIN_SCORE and trending_score > ranging_score:

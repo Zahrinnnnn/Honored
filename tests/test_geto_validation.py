@@ -21,9 +21,7 @@ Run: python -m pytest tests/test_geto_validation.py -v
 import sys
 import os
 import asyncio
-import json
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

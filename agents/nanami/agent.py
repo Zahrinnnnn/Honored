@@ -184,7 +184,7 @@ async def _try_model_a(
     session: str,
     regime: str,
 ):
-    """Fetch M15 if needed, check session limit, run Model A."""
+    """Check session limit, run Model A (Kalman velocity in df_m5 — no M15 needed)."""
     count = await state.get_session_trade_count(session, MODEL_A)
     if count >= MODEL_SESSION_LIMITS[MODEL_A]:
         logger.debug(
@@ -193,14 +193,7 @@ async def _try_model_a(
         )
         return None
 
-    # Fetch M15 candles (only when Model A is eligible)
-    df_m15 = await market_data.get_candles("15m", count=100)
-    if df_m15.empty:
-        logger.warning("M15 candles unavailable — Model A skipped")
-        return None
-    df_m15 = indicator_engine.add_indicators(df_m15)
-
-    return m5_momentum.generate_signal(df_m5, df_m15, session, regime)
+    return m5_momentum.generate_signal(df_m5, session, regime)
 
 
 async def _try_model_b(
