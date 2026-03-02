@@ -1,0 +1,37 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw/workspace",
+      "model": {
+        "primary": "openai/deepseek-chat"
+      },
+      "heartbeat": {
+        "every": "60s"
+      },
+      "sandbox": {
+        "mode": "off"
+      }
+    }
+  },
+  "channels": {
+    "whatsapp": {
+      "dmPolicy": "allowlist",
+      "allowFrom": ["${USER_WHATSAPP_NUMBER}"],
+      "sendReadReceipts": false,
+      "ackReaction": {
+        "emoji": "⚡"
+      }
+    }
+  },
+  "cron": {
+    "enabled": true,
+    "maxConcurrentRuns": 1
+  },
+  "tools": {
+    "profile": "full"
+  },
+  "env": {
+    "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY}",
+    "HONORED_DB": "${HONORED_DB_PATH}"
+  }
+}
