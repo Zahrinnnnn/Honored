@@ -285,6 +285,21 @@ class StateManager:
         )
         return [dict(r) for r in rows]
 
+    async def get_trades_by_period(self, days: int, paper: bool = None) -> list:
+        """Return completed trades within the last N days, oldest-first.
+
+        Args:
+            days:  Look-back window in calendar days.
+            paper: True=paper, False=live, None=uses current PAPER_MODE.
+        """
+        paper_filter = (1 if paper else 0) if paper is not None else (1 if PAPER_MODE else 0)
+        rows = await self._fetchall(
+            "SELECT * FROM trades WHERE result IS NOT NULL AND paper = ? "
+            "AND date >= date('now', ?) ORDER BY date ASC, time ASC",
+            (paper_filter, f"-{days} days"),
+        )
+        return [dict(r) for r in rows]
+
     # ── alert_queue ──────────────────────────────────────────────────────────
 
     async def push_alert(self, alert_type: str, message: str):
