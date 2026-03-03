@@ -378,7 +378,7 @@ PHASE 1 ✅ COMPLETE   Foundation
 PHASE 2 ✅ COMPLETE   NANAMI — Analyst
 PHASE 3 ✅ COMPLETE   GETO — Risk Manager
 PHASE 4 ✅ COMPLETE   TOJI — Executor
-PHASE 5 ⬜ PENDING    GOJO — Commander
+PHASE 5 ✅ COMPLETE   GOJO — Commander
 PHASE 6 ⬜ PENDING    MAHORAGA — Learning
 PHASE 7 ⬜ PENDING    Integration & Paper Trading
 PHASE 8 ⬜ PENDING    Go Live
@@ -573,20 +573,53 @@ PHASE 8 ⬜ PENDING    Go Live
   Tests:  54/54 passing (test_toji_execution.py)
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 5 — GOJO (Commander)              ⬜ PENDING  ║
+║  PHASE 5 — GOJO (Commander)              ✅ COMPLETE  ║
 ╚══════════════════════════════════════════════════════╝
 
-  [ ] gojo/SOUL.md                            ← JARVIS personality
-  [ ] gojo/AGENTS.md                          ← command routing
-  [ ] gojo/IDENTITY.md
-  [ ] gojo/HEARTBEAT.md
-  [ ] gojo/skills/honored-trading/SKILL.md
-  [ ] gojo/skills/honored-trading/scripts/get_status.py
-  [ ] gojo/skills/honored-trading/scripts/get_report.py
-  [ ] gojo/skills/honored-trading/scripts/set_flag.py
-  [ ] gojo/skills/honored-trading/scripts/get_signal_reason.py
-  [ ] gojo/skills/honored-trading/scripts/trigger_mahoraga.py
-  → TEST: send all WhatsApp commands, verify correct tool calls + responses
+  [x] gojo/SOUL.md                            ← JARVIS personality (witty, dry, never robotic)
+  [x] gojo/AGENTS.md                          ← command routing (status/pause/resume/override/why/report/analyze)
+  [x] gojo/IDENTITY.md                        ← name, emoji, quick command reference
+  [x] gojo/HEARTBEAT.md                       ← polls alert_queue every 60s; formats per alert_type → WhatsApp
+  [x] gojo/openclaw.json                      ← openclaw config template: deepseek/deepseek-chat custom provider,
+                                                 heartbeat 60s, sandbox off, env: DEEPSEEK_API_KEY + HONORED_DB
+  [x] gojo/skills/honored-trading/SKILL.md   ← always:true skill; {baseDir} resolves to scripts/
+
+  [x] gojo/skills/honored-trading/scripts/get_status.py
+        Full system snapshot: state, gold_price (bid/ask/spread from session_info), regime,
+        session, consecutive_losses, last_signal, last_decision, today P&L (wins/losses/by_model),
+        open_trades details (entry/SL/TP/lot), session_counts per model, minutes_to_news,
+        upcoming_news (medium+high, next 6h, with currency + affects_gold flag), asian_range.
+        --alerts-only mode: returns unsent alert_queue rows + marks them sent (heartbeat path).
+
+  [x] gojo/skills/honored-trading/scripts/get_report.py
+        Trade history (--days N, default 7): win_rate, total_pnl, avg_pnl,
+        best/worst trade, by_model breakdown.
+
+  [x] gojo/skills/honored-trading/scripts/set_flag.py
+        Sets pause_flag / halt_flag / emergency_halt_flag (true/false).
+        --flag override: clears halt_flag + resets consecutive_losses to 0.
+
+  [x] gojo/skills/honored-trading/scripts/get_signal_reason.py
+        Returns last_signal JSON + last_risk_decision from trading_state.
+
+  [x] gojo/skills/honored-trading/scripts/trigger_mahoraga.py
+        Writes manual_trigger=true to mahoraga_state; MAHORAGA picks up on next poll.
+
+  [x] core/news_fetcher.py — refactored to _fetch_all_events() (all impacts) +
+        fetch_high_impact_events() (backward compat, used by trading agents) +
+        fetch_upcoming_events() (display-only, medium+high, adds minutes_away field).
+
+  OpenClaw deployment notes:
+  - Model: deepseek/deepseek-chat via custom provider (baseUrl: https://api.deepseek.com,
+    api: openai-completions, apiKey in models.providers.deepseek.apiKey)
+  - Gateway auth: DEEPSEEK_API_KEY must be in models.providers.deepseek.apiKey
+    (NOT in env section — that's for subprocess scripts only)
+  - WhatsApp: dmPolicy=allowlist, allowFrom=[user_number], groupPolicy=allowlist
+  - Workspace sync: after any script change, manually cp to ~/.openclaw/workspace/skills/...
+
+  Commits: e1beb63 (build), bae4eba (enrich status: gold price, regime, today P&L, news detail)
+  Tested:  All WhatsApp commands working end-to-end (status, pause, resume, override, why,
+           report, analyze, news). Heartbeat delivering alerts. 223/223 tests still passing.
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 6 — MAHORAGA (Learning)           ⬜ PENDING  ║

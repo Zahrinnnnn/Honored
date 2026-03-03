@@ -81,16 +81,20 @@ WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO
 
 ## WhatsApp Commands
 
-```
-status       → balance, drawdown, open trade, last 5 trades
-pause        → pause trading (NANAMI keeps watching)
-resume       → resume trading
-report       → full trade log summary
-why          → reasoning behind last signal
-override     → reset halt flag after review
-performance  → weekly/monthly stats from MAHORAGA
-adapt        → trigger manual MAHORAGA analysis run
-```
+| Command | What it does |
+|---------|-------------|
+| `status` | Gold price, balance/DD, regime, session, open trades, today P&L, upcoming news (next 6h, medium+high) |
+| `report` | Last 7 days — win rate, total P&L, avg trade, best/worst, breakdown by model |
+| `report 30` | Same, last 30 days |
+| `pause` | Pause signal generation (NANAMI keeps watching, no new trades) |
+| `resume` | Resume trading |
+| `override` | Clear soft halt after 3 consecutive losses |
+| `emergency override` | Clear emergency halt after 50% drawdown |
+| `why` | Last signal details + GETO's validation decision |
+| `analyze` | Trigger MAHORAGA performance analysis immediately |
+| `help` | Show command reference |
+
+GOJO responds in JARVIS style — confident, dry wit, never robotic.
 
 ---
 
@@ -98,11 +102,12 @@ adapt        → trigger manual MAHORAGA analysis run
 
 | Layer | Technology |
 |-------|-----------|
-| Commander (GOJO) | OpenClaw + DeepSeek Chat (via OpenAI-compatible API) |
+| Commander (GOJO) | OpenClaw v2026.3 + DeepSeek Chat (custom provider, openai-completions compat) |
+| WhatsApp | OpenClaw + Baileys (no Meta Business account needed) |
 | Trading agents | Python 3.11 + asyncio |
 | Indicators | `ta` library + statsmodels + scipy (Hurst, Kalman, OU) |
 | Broker API | MetaApi Cloud (REST) |
-| News calendar | Finnhub free tier |
+| News calendar | ForexFactory XML free feed (no API key needed) |
 | Shared state | SQLite (WAL mode, concurrent-safe) |
 | Process mgmt (VPS) | OpenClaw → systemd, Python agents → supervisord |
 
@@ -116,7 +121,7 @@ honored/
 │   ├── constants.py          # All thresholds, session windows, model configs
 │   ├── state_manager.py      # SQLite wrapper — all DB access goes through here
 │   ├── metaapi_client.py     # MetaApi connection with retry/backoff
-│   └── news_fetcher.py       # Finnhub calendar — blocks trades if unreachable
+│   └── news_fetcher.py       # ForexFactory XML calendar — blocks trades if unreachable
 │
 ├── agents/
 │   ├── nanami/               # Analyst — signals every 60s
@@ -147,8 +152,8 @@ honored/
 - Python 3.11+
 - Node.js 22+
 - MetaApi account + HFM MT5 Cents account
-- DeepSeek API key
-- Finnhub free API key (finnhub.io)
+- DeepSeek API key (deepseek.com)
+- No news API key needed — ForexFactory XML feed is free
 
 ### Local Development
 
@@ -167,7 +172,8 @@ npm install -g openclaw@latest
 
 # 4. Configure environment
 cp .env.example .env
-# Fill in: META_API_TOKEN, HFM_ACCOUNT_ID, DEEPSEEK_API_KEY, FINNHUB_API_KEY
+# Fill in: META_API_TOKEN, HFM_ACCOUNT_ID, DEEPSEEK_API_KEY
+# (No FINNHUB_API_KEY needed — uses ForexFactory free XML feed)
 
 # 5. Set up GOJO workspace
 mkdir -p ~/.openclaw/workspace/skills
@@ -202,11 +208,11 @@ See `deploy/setup.sh` for the full automated provisioning script.
 
 | Phase | Agent | Status | Tests | What's inside |
 |-------|-------|--------|-------|---------------|
-| 1 | **Foundation** | ✅ Complete | — | `core/` — constants, SQLite state manager, MetaApi client, Finnhub news fetcher |
+| 1 | **Foundation** | ✅ Complete | — | `core/` — constants, SQLite state manager, MetaApi client, ForexFactory news fetcher |
 | 2 | **NANAMI** | ✅ Complete | 97/97 | Market data, indicator engine (21 cols), session/regime detection, 3 quant model signals |
 | 3 | **GETO** | ✅ Complete | 72/72 | Account monitor, consecutive tracker, DD monitor, news calendar, 11-check validator, halt logic |
 | 4 | **TOJI** | ✅ Complete | 54/54 | Lot calculator, paper/live order placer, trade monitor (SL/TP detection), trade logger, state updater |
-| 5 | **GOJO** | ⏳ Next | — | OpenClaw workspace (SOUL.md, AGENTS.md, HEARTBEAT.md, SKILL.md) + tool scripts |
+| 5 | **GOJO** | ✅ Complete | — | OpenClaw + DeepSeek, SOUL.md/AGENTS.md/HEARTBEAT.md, 5 tool scripts, enriched status, ForexFactory news display |
 | 6 | **MAHORAGA** | ⬜ Pending | — | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
 | 7 | **Integration** | ⬜ Pending | — | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
 | 8 | **Go Live** | ⬜ Pending | — | `PAPER_MODE=false`, live on $20 HFM Cents account |
@@ -300,26 +306,37 @@ agents/toji/
 **PnL formula:** `pnl = lot_size × price_diff_USD`
 (derives from `lot = risk_amount / sl_distance`; 1 lot = $1/dollar on HFM Cents)
 
-### Phase 5 — GOJO (Commander) ⏳ Next
+### Phase 5 — GOJO (Commander) ✅ Complete
 
 ```
 gojo/
 ├── SOUL.md                        JARVIS personality — witty, dry, confident, never robotic
-├── AGENTS.md                      Command routing rules
-├── IDENTITY.md                    Name, emoji, theme
-├── HEARTBEAT.md                   Polls alert_queue every 60s; delivers pending alerts to WhatsApp
+├── AGENTS.md                      Command routing (status/report/pause/resume/override/why/analyze)
+├── IDENTITY.md                    Name, emoji, command quick-reference
+├── HEARTBEAT.md                   Polls alert_queue every 60s; formats TRADE_OPENED/CLOSED/HALT
+│                                  alerts into JARVIS-style messages → WhatsApp
+├── openclaw.json                  Config template (deepseek/deepseek-chat custom provider)
 └── skills/honored-trading/
-    ├── SKILL.md                   OpenClaw skill definition (frontmatter + workflow)
+    ├── SKILL.md                   always:true skill; {baseDir} → script dir
     └── scripts/
-        ├── get_status.py          System + account snapshot → JSON
-        ├── get_report.py          Trade history (--days N) → JSON
-        ├── set_flag.py            Set pause_flag / halt_flag → JSON
-        ├── get_signal_reason.py   Last signal + GETO decision → JSON
-        └── trigger_mahoraga.py    Kick MAHORAGA analysis run → JSON
+        ├── get_status.py          Gold price (bid/ask/spread), balance, regime, session,
+        │                          today P&L/wins/losses by model, open trade details,
+        │                          session counts per model, upcoming news (medium+high,
+        │                          next 6h, currency + affects_gold flag) → JSON
+        ├── get_report.py          Trade history (--days N, default 7): win_rate, total_pnl,
+        │                          avg_pnl, best/worst trade, by_model breakdown → JSON
+        ├── set_flag.py            pause_flag / halt_flag / emergency_halt_flag toggle;
+        │                          --flag override clears halt + resets consecutive_losses
+        ├── get_signal_reason.py   Last signal + GETO validation decision → JSON
+        └── trigger_mahoraga.py    Sets manual_trigger in mahoraga_state → JSON
 ```
 
-All scripts: accept `--json`, read `HONORED_DB` env var, return `{"status":"ok","data":{...}}`.
-GOJO is DeepSeek-chat via OpenClaw; speaks JARVIS-style (witty, never robotic).
+All scripts: read `HONORED_DB` env var, return `{"status":"ok","data":{...}}`, exit 1 on error.
+GOJO uses DeepSeek Chat via OpenClaw's custom provider (openai-completions compat).
+Model auth: `apiKey` in `models.providers.deepseek` — NOT in the `env` section (that's subprocess only).
+
+**Deployment:** `openclaw gateway run` with `DEEPSEEK_API_KEY` set; workspace files at
+`~/.openclaw/workspace/`; scripts must be manually synced after changes (`cp gojo/skills/... ~/.openclaw/workspace/skills/...`).
 
 ---
 
