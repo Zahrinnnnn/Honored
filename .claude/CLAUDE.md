@@ -379,7 +379,7 @@ PHASE 2 ✅ COMPLETE   NANAMI — Analyst
 PHASE 3 ✅ COMPLETE   GETO — Risk Manager
 PHASE 4 ✅ COMPLETE   TOJI — Executor
 PHASE 5 ✅ COMPLETE   GOJO — Commander
-PHASE 6 ⬜ PENDING    MAHORAGA — Learning
+PHASE 6 ✅ COMPLETE   MAHORAGA — Learning
 PHASE 7 ⬜ PENDING    Integration & Paper Trading
 PHASE 8 ⬜ PENDING    Go Live
 ```
@@ -622,16 +622,61 @@ PHASE 8 ⬜ PENDING    Go Live
            report, analyze, news). Heartbeat delivering alerts. 223/223 tests still passing.
 
 ╔══════════════════════════════════════════════════════╗
-║  PHASE 6 — MAHORAGA (Learning)           ⬜ PENDING  ║
+║  PHASE 6 — MAHORAGA (Learning)           ✅ COMPLETE  ║
 ╚══════════════════════════════════════════════════════╝
 
-  [ ] agents/mahoraga/skills/performance_analyzer.py
-  [ ] agents/mahoraga/skills/model_evaluator.py
-  [ ] agents/mahoraga/skills/parameter_optimizer.py
-  [ ] agents/mahoraga/skills/regime_validator.py
-  [ ] agents/mahoraga/skills/adaptation_reporter.py
-  [ ] agents/mahoraga/agent.py
-  → TEST: feed 50+ historical trades, verify recommendations are sane
+  [x] agents/mahoraga/skills/performance_analyzer.py
+        compute_stats() — win_rate, total_pnl, avg_pnl, best/worst trade,
+        Sharpe ratio (annualised trade-level), max drawdown %, recovery factor,
+        profit factor, avg duration. Plus: by_model_stats(), by_session_stats(),
+        by_direction_stats(), rolling_stats(days).
+
+  [x] agents/mahoraga/skills/model_evaluator.py
+        evaluate_model() — full statistical evaluation per model.
+        binomial_significance(): scipy.stats.binomtest (p-value, significant flag);
+          falls back to normal approximation if scipy unavailable.
+        kelly_fraction(): f* = p − q/b, capped at [0, 0.25] (half-Kelly safety).
+        detect_drift(): compare recent 20 trades vs historical baseline;
+          drift flagged when recent_wr < historical_wr − 0.15 (15pp drop).
+        Composite score 0–100: base=win_rate×100, ±Kelly, ±drift, ±significance.
+        Status: HEALTHY | OUTPERFORM | UNDERPERFORM | DRIFT | INSUFFICIENT_DATA.
+        Model-specific recommendations: M5_MOMENTUM → raise z-score 1.5→2.0;
+          M1_MEANREV → raise OU z-score 2.0→2.5; LONDON_BREAKOUT → raise range $3→$5.
+
+  [x] agents/mahoraga/skills/parameter_optimizer.py
+        analyze_sl_ranges(): bucket trades by SL distance ($0-4/$4-6/$6-8/$8+);
+          rank by avg P&L — identifies best SL distance range.
+        analyze_session_timing(): UTC-hour buckets; identifies peak trading hours.
+        analyze_direction_bias(): BUY vs SELL win rate asymmetry.
+        analyze_duration_vs_outcome(): avg duration for wins vs losses.
+        generate_parameter_suggestions(): produces human-readable hints.
+
+  [x] agents/mahoraga/skills/regime_validator.py
+        validate_regime_accuracy(): trade outcome as regime quality proxy;
+          GOOD (≥55%), MARGINAL (40-55%), POOR (<40%), INSUFFICIENT_DATA.
+        analyze_regime_stability(): flip rate, dominant regime, distribution dict.
+        generate_regime_suggestions(): specific Hurst/ADF threshold adjustments.
+
+  [x] agents/mahoraga/skills/adaptation_reporter.py
+        compile_report(): full structured JSON report with generated_at, period_days,
+          overall stats, by_model evaluations, regime_accuracy, recommendations list,
+          param_hints, summary_counts (CRITICAL/HIGH/MEDIUM/LOW).
+        format_whatsapp_summary(): JARVIS-style digest — WR, P&L, Sharpe, per-model
+          status emojis, top finding + suggestion, approval reminder.
+        Recommendation dataclass: priority, model, type, finding, suggestion,
+          confidence_pct, expected_impact. Priority-sorted CRITICAL→LOW.
+
+  [x] agents/mahoraga/agent.py
+        60s poll. Daily 21:30 GMT + Sunday weekly 90-day deep review.
+        On-demand via mahoraga_state.manual_trigger (set by trigger_mahoraga.py).
+        Skips if < MIN_TRADES_FOR_ANALYSIS (30) completed trades.
+        Writes last_report JSON to mahoraga_state; pushes MAHORAGA_REPORT alert.
+        NEVER auto-applies — all recommendations require explicit user approval.
+
+  [x] core/state_manager.py — added get_trades_by_period(days, paper) method.
+
+  Commit: d7451dd (build Phase 6 + 68 tests)
+  Tests:  68/68 passing (test_mahoraga_analysis.py) | 291/291 total
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 7 — Integration & Paper Trading   ⬜ PENDING  ║

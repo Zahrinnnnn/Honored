@@ -213,7 +213,7 @@ See `deploy/setup.sh` for the full automated provisioning script.
 | 3 | **GETO** | ✅ Complete | 72/72 | Account monitor, consecutive tracker, DD monitor, news calendar, 11-check validator, halt logic |
 | 4 | **TOJI** | ✅ Complete | 54/54 | Lot calculator, paper/live order placer, trade monitor (SL/TP detection), trade logger, state updater |
 | 5 | **GOJO** | ✅ Complete | — | OpenClaw + DeepSeek, SOUL.md/AGENTS.md/HEARTBEAT.md, 5 tool scripts, enriched status, ForexFactory news display |
-| 6 | **MAHORAGA** | ⬜ Pending | — | Performance analyzer, model evaluator, parameter optimizer, adaptation reporter |
+| 6 | **MAHORAGA** | ✅ Complete | 68/68 | Binomial significance, Kelly criterion, drift detection, SL/session/regime analysis, JARVIS WhatsApp reports |
 | 7 | **Integration** | ⬜ Pending | — | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
 | 8 | **Go Live** | ⬜ Pending | — | `PAPER_MODE=false`, live on $20 HFM Cents account |
 
@@ -337,6 +337,41 @@ Model auth: `apiKey` in `models.providers.deepseek` — NOT in the `env` section
 
 **Deployment:** `openclaw gateway run` with `DEEPSEEK_API_KEY` set; workspace files at
 `~/.openclaw/workspace/`; scripts must be manually synced after changes (`cp gojo/skills/... ~/.openclaw/workspace/skills/...`).
+
+### Phase 6 — MAHORAGA (Learning) ✅ Complete
+
+```
+agents/mahoraga/
+├── skills/
+│   ├── performance_analyzer.py   Sharpe ratio, max drawdown, recovery factor,
+│   │                             profit factor; by_model/session/direction/rolling breakdowns
+│   ├── model_evaluator.py        scipy binomtest significance + normal approx fallback;
+│   │                             Kelly criterion f* = p − q/b (capped half-Kelly);
+│   │                             drift detection: recent 20 vs historical (Δ≥15% → DRIFT);
+│   │                             composite 0–100 health score; model-specific suggestions
+│   ├── parameter_optimizer.py    SL distance bucket analysis ($0-4/$4-6/$6-8/$8+);
+│   │                             session timing heatmap (UTC-hour); BUY vs SELL bias;
+│   │                             duration vs outcome; parameter suggestion generator
+│   ├── regime_validator.py       Regime accuracy proxy via trade outcomes (GOOD/MARGINAL/POOR);
+│   │                             stability analysis (flip rate, dominant regime);
+│   │                             Hurst/ADF threshold adjustment suggestions
+│   └── adaptation_reporter.py    compile_report() → full JSON report stored in mahoraga_state;
+│                                 format_whatsapp_summary() → JARVIS digest with per-model
+│                                 emojis, top finding, confidence %, expected impact;
+│                                 Recommendations: CRITICAL | HIGH | MEDIUM | LOW
+└── agent.py                      60s poll; daily 21:30 GMT + Sunday weekly 90-day review;
+                                  on-demand via manual_trigger; skips if < 30 trades;
+                                  writes last_report to mahoraga_state; pushes MAHORAGA_REPORT;
+                                  NEVER auto-applies — all changes require user approval
+```
+
+**State manager:** `get_trades_by_period(days, paper)` method added to `core/state_manager.py`.
+
+Sample recommendations MAHORAGA generates:
+- 🔴 `CRITICAL`: drift detected — recent 20 trades at 32% WR vs historical 58%. Consider pausing Model B.
+- ⚠️ `HIGH`: M5_MOMENTUM win rate 27% (p=0.02, significant). Raise z-score threshold 1.5 → 2.0.
+- 📊 `MEDIUM`: Kelly fraction ≤ 0 on M1_MEANREV — no positive edge at current win rate. Review entry criteria.
+- ✅ `LOW`: SL $4–6 range → 68% WR vs $6–8 → 41% WR. Tighter SLs performing better.
 
 ---
 
