@@ -107,11 +107,11 @@ def _to_utc(date_str: str, time_str: str):
 # Public API
 # ---------------------------------------------------------------------------
 
-def fetch_high_impact_events() -> List[dict]:
+def _fetch_all_events() -> List[dict]:
     """
-    Returns this week's high-impact economic events from ForexFactory.
-    Caches result for CACHE_TTL_HOURS. Falls back to blocking sentinel on error.
-    Each event dict has: event (str), country (str), time (ISO UTC str), impact (str).
+    Fetches all events from ForexFactory (all impact levels).
+    Caches for CACHE_TTL_HOURS. Falls back to blocking sentinel on error.
+    Each event dict has: event, country, time (ISO UTC), impact.
     """
     now_ts = datetime.now(timezone.utc).timestamp()
     cache  = _load_cache()
@@ -130,8 +130,7 @@ def fetch_high_impact_events() -> List[dict]:
 
         events = []
         for ev in root.findall("event"):
-            if (ev.findtext("impact") or "").strip().lower() != "high":
-                continue
+            impact   = (ev.findtext("impact")  or "").strip().lower()
             date_str = (ev.findtext("date")    or "").strip()
             time_str = (ev.findtext("time")    or "").strip()
             title    = (ev.findtext("title")   or "").strip()
@@ -143,16 +142,55 @@ def fetch_high_impact_events() -> List[dict]:
                 "event":   title,
                 "country": country,
                 "time":    dt_utc.isoformat(),
-                "impact":  "high",
+                "impact":  impact,
             })
 
         _save_cache({"fetched_at": now_ts, "events": events})
-        logger.info("ForexFactory: %d high-impact events this week", len(events))
+        logger.info("ForexFactory: %d events this week", len(events))
         return events
 
     except Exception as exc:
         logger.error("ForexFactory feed error: %s — blocking all trades (safety default)", exc)
         return _blocking_sentinel()
+
+
+def fetch_high_impact_events() -> List[dict]:
+    """
+    Returns this week's high-impact economic events from ForexFactory.
+    Used by trading agents for blackout decisions.
+    """
+    return [e for e in _fetch_all_events() if e.get("impact") == "high"]
+
+
+def fetch_upcoming_events(hours_ahead: float = 4.0, impacts: tuple = ("high", "medium")) -> List[dict]:
+    """
+    Returns upcoming events within hours_ahead, filtered to given impact levels.
+    Adds minutes_away field. Returns empty list on feed error (display only — no safety implication).
+    """
+    all_events = _fetch_all_events()
+    if any(e.get("_blocking") for e in all_events):
+        return []
+
+    now = datetime.now(timezone.utc)
+    cutoff = hours_ahead * 60.0
+    result = []
+
+    for event in all_events:
+        if event.get("impact") not in impacts:
+            continue
+        raw_time = event.get("time")
+        if not raw_time:
+            continue
+        try:
+            event_dt     = datetime.fromisoformat(raw_time)
+            diff_minutes = (event_dt - now).total_seconds() / 60.0
+            if 0 <= diff_minutes <= cutoff:
+                result.append({**event, "minutes_away": round(diff_minutes, 1)})
+        except (ValueError, TypeError):
+            continue
+
+    result.sort(key=lambda e: e["minutes_away"])
+    return result
 
 
 def minutes_to_next_high_impact_event() -> float:

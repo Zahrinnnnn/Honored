@@ -1,9 +1,25 @@
 {
+  "models": {
+    "providers": {
+      "deepseek": {
+        "baseUrl": "https://api.deepseek.com",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "deepseek-chat",
+            "name": "DeepSeek Chat",
+            "contextWindow": 64000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
   "agents": {
     "defaults": {
       "workspace": "~/.openclaw/workspace",
       "model": {
-        "primary": "openai/deepseek-chat"
+        "primary": "deepseek/deepseek-chat"
       },
       "heartbeat": {
         "every": "60s"
