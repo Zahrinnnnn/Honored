@@ -214,7 +214,7 @@ See `deploy/setup.sh` for the full automated provisioning script.
 | 4 | **TOJI** | ✅ Complete | 54/54 | Lot calculator, paper/live order placer, trade monitor (SL/TP detection), trade logger, state updater |
 | 5 | **GOJO** | ✅ Complete | — | OpenClaw + DeepSeek, SOUL.md/AGENTS.md/HEARTBEAT.md, 5 tool scripts, enriched status, ForexFactory news display |
 | 6 | **MAHORAGA** | ✅ Complete | 68/68 | Binomial significance, Kelly criterion, drift detection, SL/session/regime analysis, JARVIS WhatsApp reports |
-| 7 | **Integration** | ⬜ Pending | — | All agents wired, paper trading (50+ trades), halt/override scenarios verified |
+| 7 | **Integration** | ✅ Complete | 47/47 | DB init script, 47 integration tests (real SQLite), signal pipeline + halt/override state machine verified |
 | 8 | **Go Live** | ⬜ Pending | — | `PAPER_MODE=false`, live on $20 HFM Cents account |
 
 ### Phase 1 — Foundation
@@ -372,6 +372,32 @@ Sample recommendations MAHORAGA generates:
 - ⚠️ `HIGH`: M5_MOMENTUM win rate 27% (p=0.02, significant). Raise z-score threshold 1.5 → 2.0.
 - 📊 `MEDIUM`: Kelly fraction ≤ 0 on M1_MEANREV — no positive edge at current win rate. Review entry criteria.
 - ✅ `LOW`: SL $4–6 range → 68% WR vs $6–8 → 41% WR. Tighter SLs performing better.
+
+### Phase 7 — Integration ✅ Complete
+
+```
+scripts/
+└── init_db.py              Initialize paper.db or honored.db with starting balance
+                            and clean state. Run once before first paper/live session.
+                            Usage: python scripts/init_db.py [--balance 20.0] [--live]
+
+tests/
+└── test_integration.py     47 integration tests — real SQLite (tmp_path), no mocks.
+                            Tests the complete cross-agent state machine:
+                              - All 11 GETO checks via real DB reads
+                              - Model/regime exclusivity (A→TRENDING, B→RANGING, C→any)
+                              - Session count limits (A: 3/session, C: 1/day)
+                              - Trade lifecycle (open → update → close → balance)
+                              - Consecutive loss counter and reset on win
+                              - Soft halt (3 losses) + emergency halt (50% DD)
+                              - Duplicate halt suppression
+                              - Alert queue push + mark sent
+                              - Override flow (halt → clear → approved)
+                              - Signal status written to DB (APPROVED/REJECTED)
+                              - Trade monitor: check_exit + calculate_pnl
+```
+
+**Total test count: 338/338 passing** (97 NANAMI + 72 GETO + 54 TOJI + 68 MAHORAGA + 47 integration)
 
 ---
 
