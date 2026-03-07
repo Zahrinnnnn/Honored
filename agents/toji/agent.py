@@ -42,8 +42,10 @@ from core.constants import RISK_PER_TRADE_PCT, TOJI_MONITOR_INTERVAL  # noqa: E4
 from core.state_manager import StateManager, PAPER_MODE                # noqa: E402
 from agents.toji.skills.lot_calculator import calculate_lot            # noqa: E402
 from agents.toji.skills.order_placer import place_order                # noqa: E402
+from datetime import datetime, timezone                                  # noqa: E402
 from agents.toji.skills.trade_monitor import (                         # noqa: E402
     check_exit,
+    check_breakeven,
     calculate_pnl,
     get_current_price,
 )
@@ -131,16 +133,17 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
         logger.error("Cannot execute trade: balance=%.2f", balance)
         return
 
-    # ── 2. Lot calculation ──────────────────────────────────────────────────
+    # ── 2. Lot calculation (anti-martingale: halve on consecutive losses) ──
     sl_distance = float(signal.get("sl_distance", 0.0))
     if sl_distance <= 0:
         logger.error("Cannot execute trade: invalid sl_distance=%.2f", sl_distance)
         return
 
-    lot_size = calculate_lot(balance, sl_distance, RISK_PER_TRADE_PCT)
+    consec = await state.get_consecutive_losses()
+    lot_size = calculate_lot(balance, sl_distance, RISK_PER_TRADE_PCT, consec)
     logger.info(
-        "Executing %s %s | balance=%.2f sl=%.2f → lot=%.2f",
-        model, direction, balance, sl_distance, lot_size,
+        "Executing %s %s | balance=%.2f sl=%.2f consec=%d → lot=%.2f",
+        model, direction, balance, sl_distance, consec, lot_size,
     )
 
     # ── 3. Place order ──────────────────────────────────────────────────────
@@ -186,7 +189,7 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _poll_positions(state: StateManager, connection):
-    """Check all open paper trades against current price and close if hit."""
+    """Check all open trades: breakeven protection, then check exits."""
     open_trades = await state.get_open_trades()
     if not open_trades:
         return
@@ -202,36 +205,49 @@ async def _poll_positions(state: StateManager, connection):
 
     bid = price["bid"]
     ask = price["ask"]
+    now = datetime.now(timezone.utc)
 
     for trade in open_trades:
-        result = check_exit(trade, bid, ask)
-        if result is None:
+        # 1. Check breakeven protection
+        new_sl = check_breakeven(trade, bid, ask)
+        if new_sl is not None:
+            await state.update_trade(trade["id"], sl_price=new_sl)
+            trade["sl_price"] = new_sl  # update in-memory for exit check
+            logger.info("Breakeven activated: id=%d → SL=%.2f", trade["id"], new_sl)
+
+        # 2. Check for exit
+        exit_info = check_exit(trade, bid, ask, now)
+        if exit_info is None:
             continue
 
-        await _close_trade(state, trade, result, bid, ask)
+        await _close_trade(state, trade, exit_info, bid, ask)
 
 
-async def _close_trade(state: StateManager, trade: dict, result: str, bid: float, ask: float):
-    """Close a paper trade: calculate P&L, update logs and state, push alert."""
-    trade_id  = trade["id"]
-    direction = trade.get("direction", "")
-    exit_price = bid if direction == "BUY" else ask
+async def _close_trade(state: StateManager, trade: dict, exit_info: dict,
+                       bid: float, ask: float):
+    """Close a trade: calculate P&L, update logs and state, push alert."""
+    trade_id    = trade["id"]
+    direction   = trade.get("direction", "")
+    result      = exit_info["result"]
+    exit_price  = exit_info["exit_price"]
+    exit_reason = exit_info.get("exit_reason", "")
+
+    # BREAKEVEN counts as WIN for state tracking (no loss streak increment)
+    state_result = "WIN" if result == "BREAKEVEN" else result
 
     pnl = calculate_pnl(trade, exit_price)
     balance_before = float(trade.get("balance_before", 0.0))
 
-    # Post-trade state updates
     balance_after, drawdown_pct, duration_mins = await post_trade_update(
         state         = state,
-        result        = result,
+        result        = state_result,
         pnl           = pnl,
         balance_before = balance_before,
         open_time     = trade.get("created_at"),
-        session       = trade.get("reason", ""),   # session stored contextually
+        session       = trade.get("reason", ""),
         model         = trade.get("model", ""),
     )
 
-    # Log the close
     await log_trade_close(
         state         = state,
         trade_id      = trade_id,
@@ -241,21 +257,21 @@ async def _close_trade(state: StateManager, trade: dict, result: str, bid: float
         balance_after = balance_after,
         drawdown_pct  = drawdown_pct,
         duration_mins = duration_mins,
+        exit_reason   = exit_reason,
     )
 
-    # Push alert
     paper_tag = "[PAPER] " if PAPER_MODE else ""
     sign = "+" if pnl >= 0 else ""
     await state.push_alert(
         "TRADE_CLOSED",
         f"{paper_tag}Trade closed: {trade.get('model')} {direction} {result} "
-        f"| PnL={sign}{pnl:.2f} exit={exit_price:.2f} "
+        f"({exit_reason}) | PnL={sign}{pnl:.2f} exit={exit_price:.2f} "
         f"| balance→{balance_after:.2f} DD={drawdown_pct:.1f}%",
     )
 
     logger.info(
-        "Trade closed: id=%d %s %s | PnL=%+.2f | balance→%.2f",
-        trade_id, trade.get("model"), result, pnl, balance_after,
+        "Trade closed: id=%d %s %s (%s) | PnL=%+.2f | balance→%.2f",
+        trade_id, trade.get("model"), result, exit_reason, pnl, balance_after,
     )
 
 

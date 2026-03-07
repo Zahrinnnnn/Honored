@@ -4,20 +4,22 @@ test_toji_execution.py — Phase 4 TOJI tests
 Tests:
   TestLotCalculator       (9)  — calculate_lot, calculate_risk_amount
   TestOrderPlacer         (6)  — paper mode simulation
-  TestTradeMonitor       (10)  — check_exit, calculate_pnl, get_current_price
+  TestTradeMonitor       (10)  — check_exit (dict return), calculate_pnl, get_current_price
+  TestBreakeven           (7)  — check_breakeven (breakeven trigger, no-change)
+  TestTimeBasedExits      (5)  — time kill, max duration
   TestTradeLogger         (6)  — log_trade_open, log_trade_close
   TestStateUpdater        (9)  — post_trade_update (WIN/LOSS, all fields)
   TestAgentSignalPoll     (6)  — _poll_signals / _execute_signal
   TestIntegration         (6)  — full flow via in-memory SQLite
                          ──
-                         52 total
+                         64 total
 """
 
 import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,7 +33,9 @@ from core.constants import MODEL_A, MODEL_B, MODEL_C
 from core.state_manager import StateManager
 from agents.toji.skills.lot_calculator import calculate_lot, calculate_risk_amount
 from agents.toji.skills.order_placer import place_order, _simulate_fill
-from agents.toji.skills.trade_monitor import check_exit, calculate_pnl, get_current_price
+from agents.toji.skills.trade_monitor import (
+    check_exit, calculate_pnl, get_current_price, check_breakeven,
+)
 from agents.toji.skills.trade_logger import log_trade_open, log_trade_close
 from agents.toji.skills.state_updater import post_trade_update
 
@@ -53,23 +57,23 @@ def _make_signal(
     tp=2365.0,
     sl_distance=5.0,
     session="LONDON_OPEN",
-    regime="TRENDING",
     reason="unit test",
     status="APPROVED",
+    atr_at_entry=5.0,
 ) -> dict:
     return {
-        "id":          "sig-001",
-        "model":       model,
-        "direction":   direction,
-        "entry_price": entry,
-        "sl_price":    sl,
-        "tp_price":    tp,
-        "sl_distance": sl_distance,
-        "session":     session,
-        "regime":      regime,
-        "reason":      reason,
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
-        "status":      status,
+        "id":           "sig-001",
+        "model":        model,
+        "direction":    direction,
+        "entry_price":  entry,
+        "sl_price":     sl,
+        "tp_price":     tp,
+        "sl_distance":  sl_distance,
+        "session":      session,
+        "reason":       reason,
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
+        "status":       status,
+        "atr_at_entry": atr_at_entry,
     }
 
 
@@ -83,22 +87,24 @@ def _make_open_trade(
     balance_before=20.0,
     model=MODEL_A,
     created_at=None,
+    atr_at_entry=5.0,
 ) -> dict:
     return {
-        "id":            trade_id,
-        "model":         model,
-        "direction":     direction,
-        "entry_price":   entry,
-        "sl_price":      sl,
-        "tp_price":      tp,
-        "lot_size":      lot_size,
-        "sl_distance":   5.0,
-        "risk_amount":   2.0,
+        "id":             trade_id,
+        "model":          model,
+        "direction":      direction,
+        "entry_price":    entry,
+        "sl_price":       sl,
+        "tp_price":       tp,
+        "lot_size":       lot_size,
+        "sl_distance":    5.0,
+        "risk_amount":    2.0,
         "balance_before": balance_before,
-        "result":        None,
-        "paper":         1,
-        "created_at":    created_at or datetime.now(timezone.utc).isoformat(),
-        "reason":        "LONDON_OPEN",
+        "result":         None,
+        "paper":          1,
+        "created_at":     created_at or datetime.now(timezone.utc).isoformat(),
+        "reason":         "LONDON_OPEN",
+        "atr_at_entry":   atr_at_entry,
     }
 
 
@@ -120,20 +126,20 @@ async def _make_state_db() -> StateManager:
 class TestLotCalculator:
 
     def test_basic_calculation(self):
-        # balance=$20, SL=$5 → risk=$2, lot=0.40
-        assert calculate_lot(20.0, 5.0) == 0.40
+        # balance=$20, SL=$5, 5% risk → risk=$1.00, lot=0.20
+        assert calculate_lot(20.0, 5.0) == 0.20
 
     def test_growth_scaling(self):
-        # balance=$40, SL=$5 → risk=$4, lot=0.80
-        assert calculate_lot(40.0, 5.0) == 0.80
+        # balance=$40, SL=$5, 5% risk → risk=$2.00, lot=0.40
+        assert calculate_lot(40.0, 5.0) == 0.40
 
     def test_larger_sl_reduces_lot(self):
-        # balance=$20, SL=$8 → risk=$2, lot=0.25
-        assert calculate_lot(20.0, 8.0) == 0.25
+        # balance=$20, SL=$8, 5% risk → risk=$1.00, lot=0.12
+        assert calculate_lot(20.0, 8.0) == 0.12
 
     def test_model_b_sl_min(self):
-        # balance=$20, SL=$3 → risk=$2, lot=0.67
-        assert calculate_lot(20.0, 3.0) == 0.67
+        # balance=$20, SL=$3, 5% risk → risk=$1.00, lot=0.33
+        assert calculate_lot(20.0, 3.0) == 0.33
 
     def test_minimum_lot_floor(self):
         # Very large SL → lot would be tiny; floor at 0.01
@@ -141,8 +147,8 @@ class TestLotCalculator:
         assert result == 0.01
 
     def test_custom_risk_pct(self):
-        # 5% risk: balance=$20, SL=$5 → risk=$1, lot=0.20
-        assert calculate_lot(20.0, 5.0, risk_pct=0.05) == 0.20
+        # 10% risk: balance=$20, SL=$5 → risk=$2, lot=0.40
+        assert calculate_lot(20.0, 5.0, risk_pct=0.10) == 0.40
 
     def test_zero_sl_raises(self):
         with pytest.raises(ValueError, match="sl_distance"):
@@ -152,10 +158,27 @@ class TestLotCalculator:
         with pytest.raises(ValueError, match="sl_distance"):
             calculate_lot(20.0, -5.0)
 
+    def test_anti_martingale_one_loss(self):
+        # 1 consecutive loss → lot halved: 0.20 / 2 = 0.10
+        assert calculate_lot(20.0, 5.0, consecutive_losses=1) == 0.10
+
+    def test_anti_martingale_two_losses(self):
+        # 2 consecutive losses → lot quartered: 0.20 / 4 = 0.05
+        assert calculate_lot(20.0, 5.0, consecutive_losses=2) == 0.05
+
+    def test_anti_martingale_floor(self):
+        # Many losses → still floors at 0.01
+        result = calculate_lot(20.0, 5.0, consecutive_losses=10)
+        assert result == 0.01
+
+    def test_anti_martingale_zero_losses(self):
+        # 0 consecutive losses → full lot (unchanged)
+        assert calculate_lot(20.0, 5.0, consecutive_losses=0) == 0.20
+
     def test_calculate_risk_amount(self):
-        assert calculate_risk_amount(20.0) == 2.0
-        assert calculate_risk_amount(40.0) == 4.0
-        assert calculate_risk_amount(100.0, 0.05) == 5.0
+        assert calculate_risk_amount(20.0) == 1.0
+        assert calculate_risk_amount(40.0) == 2.0
+        assert calculate_risk_amount(100.0, 0.10) == 10.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -198,7 +221,7 @@ class TestOrderPlacer:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TestTradeMonitor
+# TestTradeMonitor — check_exit returns dict
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestTradeMonitor:
@@ -207,11 +230,19 @@ class TestTradeMonitor:
 
     def test_buy_tp_hit(self):
         trade = _make_open_trade(direction="BUY", sl=2345.0, tp=2365.0)
-        assert check_exit(trade, current_bid=2365.0, current_ask=2366.0) == "WIN"
+        result = check_exit(trade, current_bid=2365.0, current_ask=2366.0)
+        assert result is not None
+        assert result["result"] == "WIN"
+        assert result["exit_price"] == 2365.0
+        assert result["exit_reason"] == "TP_HIT"
 
     def test_buy_sl_hit(self):
         trade = _make_open_trade(direction="BUY", sl=2345.0, tp=2365.0)
-        assert check_exit(trade, current_bid=2345.0, current_ask=2346.0) == "LOSS"
+        result = check_exit(trade, current_bid=2345.0, current_ask=2346.0)
+        assert result is not None
+        assert result["result"] == "LOSS"
+        assert result["exit_price"] == 2345.0
+        assert result["exit_reason"] == "SL_HIT"
 
     def test_buy_still_open(self):
         trade = _make_open_trade(direction="BUY", sl=2345.0, tp=2365.0)
@@ -225,15 +256,37 @@ class TestTradeMonitor:
 
     def test_sell_tp_hit(self):
         trade = _make_open_trade(direction="SELL", sl=2360.0, tp=2335.0)
-        assert check_exit(trade, current_bid=2334.0, current_ask=2335.0) == "WIN"
+        result = check_exit(trade, current_bid=2334.0, current_ask=2335.0)
+        assert result is not None
+        assert result["result"] == "WIN"
+        assert result["exit_reason"] == "TP_HIT"
 
     def test_sell_sl_hit(self):
         trade = _make_open_trade(direction="SELL", sl=2360.0, tp=2335.0)
-        assert check_exit(trade, current_bid=2359.0, current_ask=2360.0) == "LOSS"
+        result = check_exit(trade, current_bid=2359.0, current_ask=2360.0)
+        assert result is not None
+        assert result["result"] == "LOSS"
+        assert result["exit_reason"] == "SL_HIT"
 
     def test_sell_still_open(self):
         trade = _make_open_trade(direction="SELL", sl=2360.0, tp=2335.0)
         assert check_exit(trade, current_bid=2349.0, current_ask=2350.0) is None
+
+    # ── BREAKEVEN ──────────────────────────────────────────────────────────
+
+    def test_buy_breakeven_when_sl_at_entry(self):
+        """SL moved to entry price → hit → BREAKEVEN (not LOSS)."""
+        trade = _make_open_trade(direction="BUY", entry=2350.0, sl=2350.0, tp=2365.0)
+        result = check_exit(trade, current_bid=2350.0, current_ask=2351.0)
+        assert result is not None
+        assert result["result"] == "BREAKEVEN"
+        assert result["exit_reason"] == "SL_HIT"
+
+    def test_sell_breakeven_when_sl_at_entry(self):
+        trade = _make_open_trade(direction="SELL", entry=2350.0, sl=2350.0, tp=2335.0)
+        result = check_exit(trade, current_bid=2349.0, current_ask=2350.0)
+        assert result is not None
+        assert result["result"] == "BREAKEVEN"
 
     # ── calculate_pnl ───────────────────────────────────────────────────────
 
@@ -264,6 +317,139 @@ class TestTradeMonitor:
         connection = MagicMock()
         connection.get_symbol_price = AsyncMock(side_effect=Exception("timeout"))
         result = run(get_current_price(connection))
+        assert result is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestBreakeven — check_breakeven logic
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBreakeven:
+
+    def test_buy_breakeven_at_plus_1_atr(self):
+        """At +1 ATR profit, SL should move to entry (breakeven)."""
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, atr_at_entry=5.0,
+        )
+        # Profit = 2355 - 2350 = $5 = 1 ATR
+        new_sl = check_breakeven(trade, current_bid=2355.0, current_ask=2356.0)
+        assert new_sl == 2350.0
+
+    def test_buy_no_change_below_1_atr(self):
+        """Below +1 ATR profit, no breakeven."""
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, atr_at_entry=5.0,
+        )
+        # Profit = 2353 - 2350 = $3 < 1 ATR ($5)
+        new_sl = check_breakeven(trade, current_bid=2353.0, current_ask=2354.0)
+        assert new_sl is None
+
+    def test_sell_breakeven_at_plus_1_atr(self):
+        trade = _make_open_trade(
+            direction="SELL", entry=2350.0, sl=2355.0, atr_at_entry=5.0,
+        )
+        # Profit = 2350 - 2345 = $5 = 1 ATR
+        new_sl = check_breakeven(trade, current_bid=2344.0, current_ask=2345.0)
+        assert new_sl == 2350.0
+
+    def test_sell_no_change_below_1_atr(self):
+        trade = _make_open_trade(
+            direction="SELL", entry=2350.0, sl=2355.0, atr_at_entry=5.0,
+        )
+        new_sl = check_breakeven(trade, current_bid=2348.0, current_ask=2349.0)
+        assert new_sl is None
+
+    def test_no_update_without_atr(self):
+        """No atr_at_entry → no breakeven."""
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, atr_at_entry=0.0,
+        )
+        new_sl = check_breakeven(trade, current_bid=2370.0, current_ask=2371.0)
+        assert new_sl is None
+
+    def test_buy_already_at_breakeven(self):
+        """SL already at entry → no change."""
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2350.0, atr_at_entry=5.0,
+        )
+        new_sl = check_breakeven(trade, current_bid=2360.0, current_ask=2361.0)
+        assert new_sl is None
+
+    def test_sell_already_at_breakeven(self):
+        """SL already at entry → no change."""
+        trade = _make_open_trade(
+            direction="SELL", entry=2350.0, sl=2350.0, atr_at_entry=5.0,
+        )
+        new_sl = check_breakeven(trade, current_bid=2339.0, current_ask=2340.0)
+        assert new_sl is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestTimeBasedExits — time kill, max duration
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestTimeBasedExits:
+
+    def test_time_kill_buy_not_profitable(self):
+        """After 60 min, BUY trade at/below entry → TIME_KILL."""
+        open_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        now = open_time + timedelta(minutes=61)
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, tp=2365.0,
+            created_at=open_time.isoformat(),
+        )
+        result = check_exit(trade, current_bid=2349.0, current_ask=2350.0, now=now)
+        assert result is not None
+        assert result["result"] == "LOSS"
+        assert result["exit_reason"] == "TIME_KILL"
+
+    def test_time_kill_skipped_if_profitable(self):
+        """After 60 min, BUY trade above entry → no time kill."""
+        open_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        now = open_time + timedelta(minutes=61)
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, tp=2365.0,
+            created_at=open_time.isoformat(),
+        )
+        result = check_exit(trade, current_bid=2352.0, current_ask=2353.0, now=now)
+        assert result is None
+
+    def test_max_duration_closes_trade(self):
+        """After 4 hours, trade is force-closed regardless of profit."""
+        open_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        now = open_time + timedelta(minutes=241)
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, tp=2365.0,
+            created_at=open_time.isoformat(),
+        )
+        result = check_exit(trade, current_bid=2355.0, current_ask=2356.0, now=now)
+        assert result is not None
+        assert result["exit_reason"] == "MAX_DURATION"
+        assert result["result"] == "WIN"  # profitable at close
+
+    def test_max_duration_loss(self):
+        """After 4 hours, unprofitable trade exits as TIME_KILL (fires before MAX_DURATION)."""
+        open_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        now = open_time + timedelta(minutes=241)
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, tp=2365.0,
+            created_at=open_time.isoformat(),
+        )
+        result = check_exit(trade, current_bid=2348.0, current_ask=2349.0, now=now)
+        assert result is not None
+        # TIME_KILL fires first (not profitable after 60 min), before MAX_DURATION
+        assert result["exit_reason"] == "TIME_KILL"
+        assert result["result"] == "LOSS"
+
+    def test_no_time_exit_before_60_min(self):
+        """Before 60 min, no time-based exit even if not profitable."""
+        open_time = datetime(2024, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        now = open_time + timedelta(minutes=50)
+        trade = _make_open_trade(
+            direction="BUY", entry=2350.0, sl=2345.0, tp=2365.0,
+            created_at=open_time.isoformat(),
+        )
+        result = check_exit(trade, current_bid=2348.0, current_ask=2349.0, now=now)
         assert result is None
 
 
@@ -334,7 +520,10 @@ class TestTradeLogger:
             signal = _make_signal()
             order_result = {"entry_price": 2350.0, "order_id": "PAPER-XYZ"}
             trade_id = await log_trade_open(state, signal, 0.40, order_result)
-            await log_trade_close(state, trade_id, "WIN", 2365.0, 6.0, 26.0, 0.0, 12.5)
+            await log_trade_close(
+                state, trade_id, "WIN", 2365.0, 6.0, 26.0, 0.0, 12.5,
+                exit_reason="TP_HIT",
+            )
             trades = await state.get_trades()
             await state.close()
             return trades[0]
@@ -350,7 +539,10 @@ class TestTradeLogger:
             signal = _make_signal()
             order_result = {"entry_price": 2350.0, "order_id": "PAPER-XYZ"}
             trade_id = await log_trade_open(state, signal, 0.40, order_result)
-            await log_trade_close(state, trade_id, "LOSS", 2345.0, -2.0, 18.0, 10.0, 8.3)
+            await log_trade_close(
+                state, trade_id, "LOSS", 2345.0, -2.0, 18.0, 10.0, 8.3,
+                exit_reason="SL_HIT",
+            )
             trades = await state.get_trades()
             await state.close()
             return trades[0]
@@ -609,7 +801,8 @@ class TestIntegration:
 
             # 3. Price hits TP
             trade = open_trades[0]
-            await _close_trade(state, trade, "WIN", bid=2365.0, ask=2366.0)
+            exit_info = {"result": "WIN", "exit_price": 2365.0, "exit_reason": "TP_HIT"}
+            await _close_trade(state, trade, exit_info, bid=2365.0, ask=2366.0)
 
             # 4. Verify final state
             trades = await state.get_trades()
@@ -620,8 +813,8 @@ class TestIntegration:
 
         trade, account, losses = run(_run())
         assert trade["result"]  == "WIN"
-        assert trade["pnl"]     == pytest.approx(6.0, abs=0.01)   # 0.40 × 15 = 6.0
-        assert account["balance"] == pytest.approx(26.0, abs=0.01)
+        assert trade["pnl"]     == pytest.approx(3.0, abs=0.01)   # 0.20 × 15 = 3.00
+        assert account["balance"] == pytest.approx(23.0, abs=0.01)
         assert losses == 0
 
     def test_full_loss_cycle(self):
@@ -639,7 +832,8 @@ class TestIntegration:
             await _poll_signals(state, connection=None)
 
             trade = (await state.get_open_trades())[0]
-            await _close_trade(state, trade, "LOSS", bid=2345.0, ask=2346.0)
+            exit_info = {"result": "LOSS", "exit_price": 2345.0, "exit_reason": "SL_HIT"}
+            await _close_trade(state, trade, exit_info, bid=2345.0, ask=2346.0)
 
             account = await state.get_account()
             losses  = await state.get_consecutive_losses()
@@ -647,7 +841,7 @@ class TestIntegration:
             return account["balance"], losses
 
         balance, losses = run(_run())
-        assert balance == pytest.approx(18.0, abs=0.01)   # 20 - 2 loss
+        assert balance == pytest.approx(19.0, abs=0.01)   # 20 - 1.00 loss (5% risk)
         assert losses  == 1
 
     def test_consecutive_loss_tracking(self):
@@ -669,7 +863,8 @@ class TestIntegration:
                 await _poll_signals(state, connection=None)
 
                 trade = (await state.get_open_trades())[0]
-                await _close_trade(state, trade, "LOSS", bid=2345.0, ask=2346.0)
+                exit_info = {"result": "LOSS", "exit_price": 2345.0, "exit_reason": "SL_HIT"}
+                await _close_trade(state, trade, exit_info, bid=2345.0, ask=2346.0)
 
             losses = await state.get_consecutive_losses()
             await state.close()
@@ -716,7 +911,8 @@ class TestIntegration:
             await _poll_signals(state, connection=None)
 
             trade = (await state.get_open_trades())[0]
-            await _close_trade(state, trade, "WIN", bid=2365.0, ask=2366.0)
+            exit_info = {"result": "WIN", "exit_price": 2365.0, "exit_reason": "TP_HIT"}
+            await _close_trade(state, trade, exit_info, bid=2365.0, ask=2366.0)
 
             alerts = await state.get_pending_alerts()
             await state.close()

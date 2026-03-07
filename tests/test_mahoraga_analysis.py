@@ -66,7 +66,7 @@ from agents.mahoraga.skills.adaptation_reporter import (
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _trade(result="WIN", pnl=3.0, model="M5_MOMENTUM", direction="BUY",
+def _trade(result="WIN", pnl=3.0, model="OU_GRIND", direction="BUY",
            sl_distance=5.0, duration_mins=30.0, time="08:00:00", date="2024-01-01"):
     return {
         "result": result, "pnl": pnl, "model": model,
@@ -164,12 +164,12 @@ class TestMaxDrawdown:
 
 class TestByModelStats:
     def test_splits_by_model(self):
-        trades = _wins(5, model="M5_MOMENTUM") + _losses(5, model="M1_MEANREV")
+        trades = _wins(5, model="OU_GRIND") + _losses(5, model="OU_RANGE")
         result = by_model_stats(trades)
-        assert "M5_MOMENTUM" in result
-        assert "M1_MEANREV"  in result
-        assert result["M5_MOMENTUM"]["win_rate"] == 1.0
-        assert result["M1_MEANREV"]["win_rate"]  == 0.0
+        assert "OU_GRIND" in result
+        assert "OU_RANGE"  in result
+        assert result["OU_GRIND"]["win_rate"] == 1.0
+        assert result["OU_RANGE"]["win_rate"]  == 0.0
 
     def test_unknown_model_grouped(self):
         trades = [_trade(model=None)]
@@ -277,42 +277,42 @@ class TestDetectDrift:
 
 class TestEvaluateModel:
     def test_insufficient_data(self):
-        ev = evaluate_model("M5_MOMENTUM", _wins(5))   # < 10
+        ev = evaluate_model("OU_GRIND", _wins(5))   # < 10
         assert ev.status == "INSUFFICIENT_DATA"
         assert ev.total_trades == 5
 
     def test_healthy_model(self):
         trades = _wins(7) + _losses(3)   # 70% WR
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         assert ev.status in ("HEALTHY", "OUTPERFORM")
         assert ev.win_rate == pytest.approx(0.7)
 
     def test_underperform_detected(self):
         # 10% WR over 50 trades — clearly underperforming
         trades = _wins(5) + _losses(45)
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         assert ev.status in ("UNDERPERFORM", "DRIFT")
 
     def test_outperform_detected(self):
         # Uniform wins — no drift possible (recent_wr == historical_wr == 1.0)
         trades = _wins(35)
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         assert ev.status in ("OUTPERFORM", "HEALTHY")
 
     def test_score_range(self):
         trades = _wins(7) + _losses(3)
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         assert 0 <= ev.score <= 100
 
     def test_drift_takes_priority(self):
         historical = _wins(30)
         recent     = _losses(20)   # 0% recent
         trades = historical + recent
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         assert ev.status == "DRIFT"
 
     def test_model_evaluation_has_required_fields(self):
-        ev = evaluate_model("M1_MEANREV", _wins(10) + _losses(5))
+        ev = evaluate_model("OU_RANGE", _wins(10) + _losses(5))
         assert hasattr(ev, "win_rate")
         assert hasattr(ev, "kelly_fraction")
         assert hasattr(ev, "significance")
@@ -322,7 +322,7 @@ class TestEvaluateModel:
 
     def test_recommendation_present_for_underperform(self):
         trades = _wins(3) + _losses(27)
-        ev = evaluate_model("M5_MOMENTUM", trades)
+        ev = evaluate_model("OU_GRIND", trades)
         if ev.status == "UNDERPERFORM":
             assert ev.recommendation is not None
             assert "z-score" in ev.recommendation.lower() or "threshold" in ev.recommendation.lower()
@@ -395,25 +395,25 @@ class TestGenerateParameterSuggestions:
 
 class TestValidateRegimeAccuracy:
     def test_returns_dict_keyed_by_model(self):
-        trades = _wins(5, model="M5_MOMENTUM") + _wins(5, model="M1_MEANREV")
+        trades = _wins(5, model="OU_GRIND") + _wins(5, model="OU_RANGE")
         result = validate_regime_accuracy(trades)
-        assert "M5_MOMENTUM" in result
-        assert "M1_MEANREV"  in result
+        assert "OU_GRIND" in result
+        assert "OU_RANGE"  in result
 
     def test_good_verdict_on_high_wr(self):
-        trades = _wins(10, model="M5_MOMENTUM")
+        trades = _wins(10, model="OU_GRIND")
         result = validate_regime_accuracy(trades)
-        assert result["M5_MOMENTUM"]["verdict"] == "GOOD"
+        assert result["OU_GRIND"]["verdict"] == "GOOD"
 
     def test_poor_verdict_on_low_wr(self):
-        trades = _losses(10, model="M5_MOMENTUM")
+        trades = _losses(10, model="OU_GRIND")
         result = validate_regime_accuracy(trades)
-        assert result["M5_MOMENTUM"]["verdict"] in ("POOR", "MARGINAL")
+        assert result["OU_GRIND"]["verdict"] in ("POOR", "MARGINAL")
 
     def test_insufficient_data_verdict(self):
-        trades = _wins(2, model="M5_MOMENTUM")
+        trades = _wins(2, model="OU_GRIND")
         result = validate_regime_accuracy(trades)
-        assert result["M5_MOMENTUM"]["verdict"] == "INSUFFICIENT_DATA"
+        assert result["OU_GRIND"]["verdict"] == "INSUFFICIENT_DATA"
 
 
 class TestAnalyzeRegimeStability:
@@ -449,15 +449,15 @@ class TestAnalyzeRegimeStability:
 class TestGenerateRegimeSuggestions:
     def test_good_verdict_no_suggestions(self):
         accuracy = {
-            "M5_MOMENTUM": {"verdict": "GOOD",    "accuracy_proxy": 0.70},
-            "M1_MEANREV":  {"verdict": "GOOD",    "accuracy_proxy": 0.65},
+            "OU_GRIND": {"verdict": "GOOD",    "accuracy_proxy": 0.70},
+            "OU_RANGE":  {"verdict": "GOOD",    "accuracy_proxy": 0.65},
         }
         result = generate_regime_suggestions(accuracy)
         assert any("acceptable" in s.lower() for s in result)
 
     def test_poor_verdict_generates_suggestion(self):
         accuracy = {
-            "M5_MOMENTUM": {"verdict": "POOR", "accuracy_proxy": 0.30},
+            "OU_GRIND": {"verdict": "POOR", "accuracy_proxy": 0.30},
         }
         result = generate_regime_suggestions(accuracy)
         assert any("hurst" in s.lower() or "threshold" in s.lower() for s in result)
@@ -471,7 +471,7 @@ class TestCompileReport:
     def _make_eval(self, status="HEALTHY", wr=0.60, score=65):
         from agents.mahoraga.skills.model_evaluator import ModelEvaluation
         return ModelEvaluation(
-            model="M5_MOMENTUM", total_trades=20, win_rate=wr,
+            model="OU_GRIND", total_trades=20, win_rate=wr,
             total_pnl=12.0, kelly_fraction=0.08, status=status,
             significance={"p_value": 0.04, "significant": True, "test_used": "scipy"},
             drift={"detected": False, "recent_wr": wr, "historical_wr": wr, "delta": 0.0},
@@ -496,7 +496,7 @@ class TestCompileReport:
     def test_critical_for_drift(self):
         from agents.mahoraga.skills.model_evaluator import ModelEvaluation
         ev = ModelEvaluation(
-            model="M5_MOMENTUM", total_trades=30, win_rate=0.25,
+            model="OU_GRIND", total_trades=30, win_rate=0.25,
             total_pnl=-5.0, kelly_fraction=0.0, status="DRIFT",
             significance={"p_value": 0.03, "significant": True, "test_used": "scipy"},
             drift={"detected": True, "recent_wr": 0.20, "historical_wr": 0.65, "delta": 0.45},
@@ -526,14 +526,14 @@ class TestCompileReport:
         from agents.mahoraga.skills.model_evaluator import ModelEvaluation
 
         ev_drift = ModelEvaluation(
-            model="M5_MOMENTUM", total_trades=30, win_rate=0.20,
+            model="OU_GRIND", total_trades=30, win_rate=0.20,
             total_pnl=-10.0, kelly_fraction=0.0, status="DRIFT",
             significance={"p_value": 0.01, "significant": True, "test_used": "scipy"},
             drift={"detected": True, "recent_wr": 0.10, "historical_wr": 0.60, "delta": 0.50},
             score=10, findings=["Drift."], recommendation="Pause.",
         )
         ev_ok = ModelEvaluation(
-            model="M1_MEANREV", total_trades=20, win_rate=0.60,
+            model="OU_RANGE", total_trades=20, win_rate=0.60,
             total_pnl=8.0, kelly_fraction=0.08, status="OUTPERFORM",
             significance={"p_value": 0.04, "significant": True, "test_used": "scipy"},
             drift={"detected": False, "recent_wr": 0.60, "historical_wr": 0.60, "delta": 0.0},
@@ -597,7 +597,7 @@ class TestHelpers:
         assert _priority_order("MEDIUM")   < _priority_order("LOW")
 
     def test_short_model_name(self):
-        assert _short_model_name("M5_MOMENTUM")    == "Model A"
-        assert _short_model_name("M1_MEANREV")     == "Model B"
-        assert _short_model_name("LONDON_BREAKOUT") == "Model C"
+        assert _short_model_name("OU_GRIND")    == "Model A"
+        assert _short_model_name("OU_RANGE")     == "Model B"
+        assert _short_model_name("ASIAN_BREAKOUT") == "Model C"
         assert _short_model_name("UNKNOWN")         == "UNKNOWN"

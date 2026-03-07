@@ -75,6 +75,7 @@ async def log_trade_open(
         balance_before = balance_before,
         reason        = signal.get("reason", ""),
         paper         = 1 if PAPER_MODE else 0,
+        atr_at_entry  = float(signal.get("atr_at_entry", 0.0)),
     )
 
     logger.info(
@@ -99,6 +100,7 @@ async def log_trade_close(
     balance_after: float,
     drawdown_pct: float,
     duration_mins: float,
+    exit_reason: str = "",
 ) -> None:
     """
     Update an open trade record with close details.
@@ -106,12 +108,13 @@ async def log_trade_close(
     Args:
         state:         Open StateManager instance.
         trade_id:      Row id returned by log_trade_open().
-        result:        "WIN" or "LOSS".
+        result:        "WIN", "LOSS", or "BREAKEVEN".
         exit_price:    Actual exit price (bid/ask at close).
         pnl:           Realised P&L in USD.
         balance_after: Account balance after the trade.
         drawdown_pct:  Current drawdown % after the trade.
         duration_mins: How long the trade was open (minutes).
+        exit_reason:   Why the trade closed (SL_HIT, TP_HIT, TIME_KILL, MAX_DURATION).
     """
     await state.update_trade(
         trade_id,
@@ -121,6 +124,7 @@ async def log_trade_close(
         balance_after = balance_after,
         drawdown_pct  = round(drawdown_pct, 2),
         duration_mins = round(duration_mins, 1),
+        exit_reason   = exit_reason,
     )
 
     logger.info(

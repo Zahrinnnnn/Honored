@@ -13,9 +13,9 @@ XAUUSD_POINT_VALUE (from constants, driven by ACCOUNT_TYPE env var):
 
 Both account types risk the same dollar amount; only the lot number differs.
 
-Examples (balance=$20, SL=$5, risk=10%):
-  CENTS    : lot = $2 / ($5 × 1)   = 0.40  → placed as 0.40 cents-lots
-  STANDARD : lot = $2 / ($5 × 100) = 0.004 → placed as 0.004 standard lots
+Examples (balance=$20, SL=$5, risk=0.5%):
+  CENTS    : lot = $0.10 / ($5 × 1)   = 0.02  → placed as 0.02 cents-lots
+  STANDARD : lot = $0.10 / ($5 × 100) = 0.0002 → 0.01 min lot
 
 Public API
 ──────────
@@ -36,14 +36,19 @@ def calculate_lot(
     balance: float,
     sl_distance: float,
     risk_pct: float = RISK_PER_TRADE_PCT,
+    consecutive_losses: int = 0,
 ) -> float:
     """
-    Calculate lot size for a trade.
+    Calculate lot size for a trade with anti-martingale sizing.
+
+    After each consecutive loss the lot is halved (2^consecutive_losses).
+    This bleeds slowly during losing streaks instead of hemorrhaging.
 
     Args:
-        balance:     Current account balance in USD.
-        sl_distance: Stop-loss distance in USD (must be > 0).
-        risk_pct:    Fraction of balance to risk (default 10%).
+        balance:            Current account balance in USD.
+        sl_distance:        Stop-loss distance in USD (must be > 0).
+        risk_pct:           Fraction of balance to risk (default 5%).
+        consecutive_losses: Current streak of consecutive losses (0 = full size).
 
     Returns:
         Lot size rounded to 2 decimal places, minimum 0.01.
@@ -59,11 +64,16 @@ def calculate_lot(
 
     risk_amount = balance * risk_pct
     lot = round(risk_amount / (sl_distance * XAUUSD_POINT_VALUE), 2)
+
+    # Anti-martingale: halve lot for each consecutive loss
+    if consecutive_losses > 0:
+        lot = round(lot / (2 ** consecutive_losses), 2)
+
     lot = max(lot, _MIN_LOT)
 
     logger.debug(
-        "Lot calc: balance=%.2f risk_pct=%.0f%% risk=%.2f sl=%.2f → lot=%.2f",
-        balance, risk_pct * 100, risk_amount, sl_distance, lot,
+        "Lot calc: balance=%.2f risk_pct=%.0f%% risk=%.2f sl=%.2f consec=%d → lot=%.2f",
+        balance, risk_pct * 100, risk_amount, sl_distance, consecutive_losses, lot,
     )
     return lot
 

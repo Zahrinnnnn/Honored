@@ -130,6 +130,13 @@ class StateManager:
     async def _setup_schema(self):
         await self._conn.executescript(_DDL)
         await self._conn.commit()
+        # Idempotent column migrations
+        for col, col_type in [("atr_at_entry", "REAL"), ("exit_reason", "TEXT")]:
+            try:
+                await self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+                await self._conn.commit()
+            except Exception:
+                pass  # column already exists
         await self._seed_defaults()
 
     async def _seed_defaults(self):

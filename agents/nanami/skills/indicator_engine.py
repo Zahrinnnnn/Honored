@@ -31,7 +31,7 @@ Bollinger Bands
   bb_upper, bb_mid, bb_lower  Bands (20-period, 2σ)
   bb_width                    Absolute band width  (bb_upper − bb_lower)
   bb_width_pct                Band width as % of close (normalised)
-                              Key input for regime_detector squeeze detection
+                              Useful for squeeze / volatility analysis
 
 Minimum rows required: 60 (ta library raises IndexError below window size).
 Below 60 rows all indicator columns are added as NaN — callers guard with

@@ -40,15 +40,18 @@ WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO (SOUL.md + tools)
 - GETO validation is **pure if/else** — no LLM, no reasoning around it
 - NANAMI and TOJI are **zero-LLM** — pure Python only
 - MAHORAGA **never** auto-applies parameter changes — all require explicit user approval via WhatsApp
-- Max **2 open trades** simultaneously (changed from PRD's 1)
-- Risk per trade = exactly 10% of current balance
-- RR ratio = 1:3 fixed (TP always = SL × 3)
+- No cap on simultaneous open trades
+- Risk per trade = exactly 5% of current balance
+- RR ratio = 1:2 fixed (TP always = SL × 2)
+- Anti-martingale lot sizing: halve lot for each consecutive loss (lot / 2^losses), floor at 0.01
 
 ### Model Priority & Exclusivity
-- **07:00–07:30 GMT**: Model C (London Breakout) has exclusive priority — Model A **cannot** fire in this window
-- **Model A vs Model B**: Mutually exclusive by regime (A fires only TRENDING ADX>25, B fires only RANGING ADX<20)
-- **Concurrent trades**: Can have 2× Model A open OR 2× Model B open — never Model A + B simultaneously (different regime)
-- **Model C + Model B**: Possible (regime=any for C) — GETO enforces the 2-trade max
+- **07:00–07:30 GMT**: Model C (Asian Breakout) has exclusive priority — Model A **cannot** fire in this window
+- **Model A vs Model B**: Mutually exclusive by 6-state regime (A fires only in GRIND regimes, B fires only in TIGHT_RANGE)
+- **Model A sessions**: LONDON_OPEN, NY_OVERLAP, NY_CLOSE (all 3 sessions)
+- **Model B sessions**: NY_OVERLAP only (proven toxic in other sessions)
+- **Concurrent trades**: No position cap — multiple trades can be open simultaneously
+- **Model C**: Regime-agnostic — filtered by H4 bias only
 
 ### Session Trade Count Tracking
 BOTH NANAMI and GETO own trade count:
@@ -148,13 +151,14 @@ CREATE TABLE session_info (
     value TEXT,
     updated_at TEXT
 );
--- Keys: current_session, next_news_event, minutes_to_next_news,
---       asian_range_high, asian_range_low
+-- Keys: current_session, current_regime, h4_bias, next_news_event,
+--       minutes_to_next_news, asian_range_high, asian_range_low,
+--       structural_break_until, current_spread, current_bid, current_ask
 ```
 
 ### State Access Rules
 ```
-NANAMI:   READ session_info, system_state, session_trades | WRITE trading_state.last_signal, session_trades
+NANAMI:   READ session_info, system_state, session_trades | WRITE trading_state.last_signal, session_trades, session_info (regime, bias, spread, news)
 GETO:     READ all | WRITE system_state (halt_flags), trading_state.last_risk_decision, alert_queue
 TOJI:     READ trading_state.last_risk_decision | WRITE account, trading_state (post-trade), trades, session_trades
 GOJO:     READ all | WRITE system_state (pause_flag), alert_queue.sent
@@ -163,25 +167,26 @@ MAHORAGA: READ trades, account | WRITE mahoraga_state, alert_queue
 
 ---
 
-## GETO Validation Checks (ALL 10 must pass)
+## GETO Validation Checks (ALL 11 must pass)
 
 ```python
 checks = {
-    "session_valid":            current_session in ALLOWED_SESSIONS,
-    "model_priority_ok":        not london_breakout_window() or signal.model == "LONDON_BREAKOUT",
-    "regime_matches_model":     regime_valid_for_model(signal),
-    "session_trades_within_limit": session_trade_count(signal.model) < model_max_trades(signal.model),
-    "consecutive_losses":       state["consecutive_losses"] < 3,
-    "drawdown_ok":              state["current_dd_pct"] < 50.0,
-    "open_trades_ok":           state["open_positions"] < 2,          # max 2 open
-    "news_clear":               minutes_to_next_high_impact_news() > 30,
-    "spread_acceptable":        current_spread_dollars < 4.0,
-    "not_paused":               state["pause_flag"] == False,
-    "not_halted":               state["halt_flag"] == False,
+    "session_valid":              current_session in ALLOWED_SESSIONS,
+    "model_priority_ok":          not breakout_window or signal.model == "ASIAN_BREAKOUT",
+    "regime_and_bias_ok":         regime_and_bias_allows(model, direction, regime, h4_bias),
+    "session_trades_within_limit": session_trade_count(model) < limit,  # A:8, B:8, C:1
+    "consecutive_losses_ok":      consecutive_losses < 3,
+    "drawdown_ok":                current_dd_pct < 50.0,
+    "news_clear":                 minutes_to_next_news > 30,
+    "spread_acceptable":          current_spread < $4.00,
+    "not_paused":                 pause_flag == False,
+    "not_halted":                 halt_flag == False and emergency_halt_flag == False,
+    "structural_break_clear":     structural_break_until expired or empty,
 }
 ```
 
-Note: `no_open_trades` from PRD → replaced by `open_trades_ok` (< 2).
+`regime_and_bias_ok` validates: Model A BUY→BULLISH_GRIND, SELL→BEARISH_GRIND; Model B→TIGHT_RANGE; Model C→H4 bias filter only.
+`structural_break_clear` blocks trading during 4h cooldown after single H1 candle > 3×ATR14.
 
 ---
 
@@ -326,11 +331,11 @@ honored/
 │   │   └── skills/
 │   │       ├── market_data.py
 │   │       ├── indicator_engine.py
-│   │       ├── session_detector.py
-│   │       ├── regime_detector.py
-│   │       ├── m5_momentum.py
-│   │       ├── m1_meanrev.py
-│   │       └── london_breakout.py
+│   │       ├── stat_tests.py
+│   │       ├── htf_regime.py
+│   │       ├── ou_grind.py              ← Model A (OU in GRIND regimes)
+│   │       ├── ou_range.py              ← Model B (OU in TIGHT_RANGE)
+│   │       └── asian_breakout.py        ← Model C (London breakout)
 │   ├── geto/
 │   │   ├── agent.py
 │   │   └── skills/
@@ -459,40 +464,42 @@ PHASE 8 ⬜ PENDING    Go Live
         _now_utc() returns full datetime (not time) — use this as patch target
         in tests, not _now_utc_time().
 
-  [x] agents/nanami/skills/regime_detector.py  ← QUANT UPGRADE
-        Ensemble vote: ATR spike veto → VOLATILE; then Hurst (weight 2) +
-        ACF (weight 2) + BB width percentile (weight 1). Score ≥ 2 and
-        strictly highest wins. Hurst replaces ADX vote (was weight 2).
-        rolling_hurst() imported from stat_tests. _return_acf() still exposed.
+  [x] agents/nanami/skills/htf_regime.py  ← 6-STATE REGIME (full rewrite)
+        detect_regime(df_h1): Z-score (50-bar) × ATR14 percentile (200-bar)
+        → 6 states: BULLISH_GRIND, BULLISH_BLOWOFF, BEARISH_GRIND,
+        BEARISH_PANIC, TIGHT_RANGE, TOXIC_CHOP. Default TIGHT_RANGE.
+        check_structural_break(df_h1): True if H1 candle > 3×ATR14.
+        compute_h4_bias(df_h4): retained for Model C GETO validation.
 
-  [x] agents/nanami/skills/m5_momentum.py  ← QUANT UPGRADE (full rewrite)
-        Model A — Kalman velocity trend direction + z-score pullback.
-        BUY: kalman_velocity > 0 AND z_score_50 < -1.5.
-        SELL: kalman_velocity < 0 AND z_score_50 > +1.5.
-        Signature: generate_signal(df_m5, session, regime) — NO df_m15.
-        SL = 1×ATR clamped $5–$8; TP = SL×3.
+  [x] agents/nanami/skills/ou_grind.py  ← MODEL A (full rewrite)
+        OU mean-reversion in directional GRIND regimes.
+        Dual detrend: EMA50 primary (z=0.8, 80-bar) + EMA21 fallback (z=1.3, 40-bar).
+        BUY: BULLISH_GRIND + z < -threshold.
+        SELL: BEARISH_GRIND + z > threshold.
+        Gates: regime, ADF stationary, OU fit, 3≤half_life≤50, z>threshold.
+        SL = 1.5×ATR clamped $6–$12; TP = SL×2.
 
-  [x] agents/nanami/skills/m1_meanrev.py  ← QUANT UPGRADE (full rewrite)
-        Model B — 7-gate OU+ADF mean-reversion.
-        Gates: regime=RANGING, len≥200, valid_indicators, ADF stationary,
-        OU fit, 5≤half_life_bars≤30, |ou_z|>2.0.
-        SL = max($3, min($5, 0.5×|close−mu|)); TP = SL×3.
+  [x] agents/nanami/skills/ou_range.py  ← MODEL B (full rewrite)
+        OU mean-reversion in TIGHT_RANGE (bidirectional, EMA50 only).
+        z < -1.3 → BUY, z > 1.3 → SELL.
+        Same OU engine as Model A, no EMA21 (proven noisy for bidirectional).
+        SL = 1.5×ATR clamped $6–$12; TP = SL×2.
 
-  [x] agents/nanami/skills/london_breakout.py  ← QUANT UPGRADE (minor)
-        Model C — M5 close above Asian high / below Asian low.
-        Added MODEL_C_MIN_RANGE ($3) guard — skips if range < $3.
-        SL = Asian range width clamped $6–$8.
+  [x] agents/nanami/skills/asian_breakout.py  ← MODEL C (minor update)
+        M5 close above Asian high / below Asian low.
+        MODEL_C_MIN_RANGE ($3) guard — skips if range < $3.
+        H4 bias filter: BUY needs h4≠BEARISH, SELL needs h4≠BULLISH.
+        SL = Asian range width clamped $5–$8; TP = SL×2.
 
   [x] agents/nanami/agent.py
         Main asyncio loop: 60s active / 300s blackout.
-        _try_model_a: removed M15 fetch (Kalman velocity in M5 df replaces it).
+        Fetches H1 (200 bars) for 6-state regime + structural break check.
+        Fetches H4 for Model C H4 bias. Model dispatch by regime:
+        GRIND→Model A, TIGHT_RANGE→Model B, no-trade regimes→skip.
         Updates session_info every poll. APPROVED signal guard active.
         Writes signals as JSON to trading_state.last_signal.
 
-  Commits: eed1a9a (initial build), d7f9beb (robustness: SessionContext +
-           extended indicators), 59503e0 (Hurst VR → Return ACF fix),
-           690e9c6 (quant upgrade: stat_tests, Kalman, OU+ADF, Hurst regime)
-  Tests:   97/97 passing (test_nanami_signals.py); 223/223 total
+  Tests:   97/97 passing (test_nanami_signals.py)
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 3 — GETO (Risk Manager)           ✅ COMPLETE  ║
@@ -515,11 +522,11 @@ PHASE 8 ⬜ PENDING    Go Live
         Fallback: lazy-imports core.news_fetcher (avoids import errors in tests).
         Returns 0.0 on any failure → is_news_clear() returns False (fail-safe).
 
-  [x] agents/geto/skills/trade_validator.py   ← 11 checks (10+1 split flags)
+  [x] agents/geto/skills/trade_validator.py   ← 11 checks
         _ALLOWED_SESSIONS = set(ACTIVE_SESSIONS) | {"LONDON_BREAKOUT"}
-        (LONDON_BREAKOUT added for Model C — model_priority_ok enforces exclusivity)
         ValidationResult dataclass: approved, checks dict, fail_reason, signal.
-        _regime_ok(): MODEL_A→TRENDING, MODEL_B→RANGING, MODEL_C→any.
+        _regime_and_bias_ok(): MODEL_A→GRIND+direction, MODEL_B→TIGHT_RANGE, MODEL_C→H4 bias.
+        structural_break_clear: reads structural_break_until from session_info.
 
   [x] agents/geto/agent.py
         5s poll. _monitor_halt_conditions() first (DD→emergency halt, losses→soft halt).
@@ -535,7 +542,9 @@ PHASE 8 ⬜ PENDING    Go Live
 ╚══════════════════════════════════════════════════════╝
 
   [x] agents/toji/skills/lot_calculator.py
-        calculate_lot(balance, sl_distance) → lot rounded to 2dp, min 0.01
+        calculate_lot(balance, sl_distance, risk_pct, consecutive_losses)
+        → lot rounded to 2dp, min 0.01.
+        Anti-martingale: lot / 2^consecutive_losses, floor 0.01.
         calculate_risk_amount(balance) → USD risk per trade
 
   [x] agents/toji/skills/order_placer.py
@@ -544,9 +553,11 @@ PHASE 8 ⬜ PENDING    Go Live
         PAPER_MODE env var controls which path runs.
 
   [x] agents/toji/skills/trade_monitor.py
-        check_exit(trade, bid, ask) → "WIN" / "LOSS" / None
-        BUY exits at bid (SL if bid≤sl, TP if bid≥tp).
-        SELL exits at ask (SL if ask≥sl, TP if ask≤tp).
+        check_breakeven(trade, bid, ask) → new SL or None (at +1 ATR profit).
+        check_exit(trade, bid, ask, now) → "WIN"/"LOSS"/"BREAKEVEN" or None.
+        BUY exits at bid (SL/TP), SELL exits at ask (SL/TP).
+        OU-calibrated time kill: 2 × half_life × 5 min (fallback 60 min).
+        Max duration: 4h hard cap.
         calculate_pnl(trade, exit_price) → lot × price_diff_USD
         get_current_price(connection) → {bid, ask} or None on error.
 
@@ -640,8 +651,8 @@ PHASE 8 ⬜ PENDING    Go Live
           drift flagged when recent_wr < historical_wr − 0.15 (15pp drop).
         Composite score 0–100: base=win_rate×100, ±Kelly, ±drift, ±significance.
         Status: HEALTHY | OUTPERFORM | UNDERPERFORM | DRIFT | INSUFFICIENT_DATA.
-        Model-specific recommendations: M5_MOMENTUM → raise z-score 1.5→2.0;
-          M1_MEANREV → raise OU z-score 2.0→2.5; LONDON_BREAKOUT → raise range $3→$5.
+        Model-specific recommendations: OU_GRIND → adjust z-score thresholds;
+          OU_RANGE → adjust z-score thresholds; ASIAN_BREAKOUT → raise range $3→$5.
 
   [x] agents/mahoraga/skills/parameter_optimizer.py
         analyze_sl_ranges(): bucket trades by SL distance ($0-4/$4-6/$6-8/$8+);
@@ -696,8 +707,8 @@ PHASE 8 ⬜ PENDING    Go Live
         tests/test_integration.py — real SQLite (tmp_path), NO mocks.
         Covers the full cross-agent state machine:
           - Signal validation: all 11 GETO checks via real DB reads
-          - Model/regime exclusivity: A→TRENDING, B→RANGING, C→any
-          - Session count limits: Model A (3/session), Model C (1/day)
+          - Model/regime exclusivity: A→GRIND, B→TIGHT_RANGE, C→any
+          - Session count limits: Model A (8/session), Model B (8/session), Model C (1/day)
           - Trade lifecycle: log_trade_open → post_trade_update → log_trade_close
           - Consecutive loss counter: increment, double, reset on win
           - Halt conditions: soft halt (3 losses) + emergency halt (50% DD)
@@ -708,7 +719,7 @@ PHASE 8 ⬜ PENDING    Go Live
           - Signal status written to DB (APPROVED / REJECTED) as GETO does it
           - Trade monitor pure functions: check_exit (BUY/SELL SL/TP) + calculate_pnl
 
-  [x] Total tests: 338/338 passing (291 unit + 47 integration)
+  [x] Total tests: 362/362 passing (315 unit + 47 integration)
 
   Manual verification steps (run on VPS / local with live agents):
   [ ] OpenClaw cron for MAHORAGA daily/weekly scheduled reports
@@ -717,7 +728,7 @@ PHASE 8 ⬜ PENDING    Go Live
   [ ] Halt/override scenarios triggered and confirmed via WhatsApp
 
   Commit: see git log — "feat: Phase 7 — integration tests + init_db script"
-  Tests:  47/47 new (test_integration.py) | 338/338 total
+  Tests:  47/47 new (test_integration.py) | 362/362 total
 
 ╔══════════════════════════════════════════════════════╗
 ║  PHASE 8 — Go Live                       ⬜ PENDING  ║
@@ -736,42 +747,65 @@ Do not skip phases. Do not start the next phase before the current one is tested
 ## Key Constants (`core/constants.py`)
 
 ```python
-RISK_PER_TRADE_PCT = 0.10
+# Risk
+RISK_PER_TRADE_PCT = 0.05        # 5% risk per trade ($1 on $20)
 MAX_DRAWDOWN_PCT = 0.50
 MAX_CONSECUTIVE_LOSSES = 3
-MAX_OPEN_TRADES = 2              # Changed from PRD's 1
 NEWS_BLACKOUT_MINUTES = 30
 MAX_SPREAD_DOLLARS = 4.0
+# No MAX_OPEN_TRADES — uncapped
 
 SESSIONS = {
     "LONDON_OPEN":     ("07:00", "10:00"),
     "NY_OVERLAP":      ("12:00", "16:00"),
     "NY_CLOSE":        ("19:00", "21:00"),
-    "LONDON_BREAKOUT": ("07:00", "07:30"),   # Model C exclusive window
+    "LONDON_BREAKOUT": ("07:00", "07:30"),
 }
 
-ADX_TRENDING_THRESHOLD = 25
-ADX_RANGING_THRESHOLD = 20
+# 6-State Regime (H1)
+REGIME_Z_SCORE_WINDOW = 50
+REGIME_Z_SCORE_THRESHOLD = 1.0
+REGIME_ATR_PERCENTILE_THRESHOLD = 75
+REGIME_H1_BARS_NEEDED = 200
 
-M5_EMA_FAST = 21
-M5_EMA_SLOW = 50
-M5_RSI_MIN = 40
-M5_RSI_MAX = 60
-M5_MAX_TRADES_PER_SESSION = 3
+# Structural Break Override
+STRUCTURAL_BREAK_ATR_MULT = 3.0        # single H1 candle > 3×ATR → halt
+STRUCTURAL_BREAK_COOLDOWN_HOURS = 4    # hours to cool down
 
-M1_BB_PERIOD = 20
-M1_BB_STD = 2.0
-M1_RSI_OVERBOUGHT = 72
-M1_RSI_OVERSOLD = 28
-M1_MAX_TRADES_PER_SESSION = 5
+# OU Model Parameters (Model A + B)
+OU_ZSCORE_ENTRY_THRESHOLD = 1.3    # Model B z-score (also Model A EMA21 fallback)
+OU_ZSCORE_GRIND_THRESHOLD = 0.8    # Model A EMA50 z-score (directional regime supports lower z)
+OU_MIN_HALF_LIFE = 3
+OU_MAX_HALF_LIFE = 50
+OU_LOOKBACK = 80                   # primary detrend window (EMA50)
+OU_LOOKBACK_SHORT = 40             # short detrend window (EMA21, Model A only)
+OU_SL_ATR_MULT = 1.5
+OU_SL_MIN = 6.0
+OU_SL_MAX = 12.0
+ADF_P_VALUE_THRESHOLD = 0.10
 
-BREAKOUT_MAX_TRADES_PER_DAY = 1
+# Exit System
+RR_RATIO = 2.0
+BREAKEVEN_ATR_THRESHOLD = 1.0          # Move SL to entry at +1 ATR profit
+OU_TIME_KILL_HALF_LIFE_MULT = 2        # OU time kill = 2 × half_life × 5 min
+TIME_KILL_MINUTES = 60                 # fallback for non-OU models
+MAX_TRADE_DURATION_MINUTES = 240
 
-MIN_TRADES_FOR_ANALYSIS = 30
-UNDERPERFORM_WIN_RATE_THRESHOLD = 0.30
-OUTPERFORM_WIN_RATE_THRESHOLD = 0.55
-MAHORAGA_DAILY_RUN_TIME = "21:30"   # GMT, after NY close
-MAHORAGA_WEEKLY_RUN_DAY = "Sunday"
+# Session limits
+M5_MAX_TRADES_PER_SESSION = 8       # Model A
+M1_MAX_TRADES_PER_SESSION = 8       # Model B
+BREAKOUT_MAX_TRADES_PER_DAY = 1     # Model C
+
+# Model names + session routing
+MODEL_A = "OU_GRIND"
+MODEL_B = "OU_RANGE"
+MODEL_C = "ASIAN_BREAKOUT"
+
+MODEL_SESSIONS = {
+    MODEL_A: ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"],
+    MODEL_B: ["NY_OVERLAP"],
+    MODEL_C: ["LONDON_BREAKOUT"],
+}
 ```
 
 ---
@@ -779,11 +813,14 @@ MAHORAGA_WEEKLY_RUN_DAY = "Sunday"
 ## Lot Calculation Formula
 
 ```python
-def calculate_lot(balance: float, sl_distance: float, risk_pct: float = 0.10) -> float:
+def calculate_lot(balance: float, sl_distance: float, risk_pct: float = 0.05,
+                  consecutive_losses: int = 0) -> float:
     """balance is in USD. sl_distance is in USD."""
     risk_amount = balance * risk_pct
-    lot = risk_amount / sl_distance
-    return round(lot, 2)
+    lot = round(risk_amount / sl_distance, 2)
+    if consecutive_losses > 0:
+        lot = round(lot / (2 ** consecutive_losses), 2)
+    return max(lot, 0.01)
 ```
 
 Balance is reported in **USD** by MetaApi, even on HFM Cents account.

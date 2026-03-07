@@ -8,7 +8,7 @@ Public API:
     get_current_price()            → dict {bid, ask, spread}
     get_asian_range()              → (float, float) — (high, low) 00:00–07:00 GMT today
 
-Timeframe strings for MetaApi: '1m', '5m', '15m'
+Timeframe strings for MetaApi: '1m', '5m', '15m', '1h', '4h'
 Candles are returned in chronological order (oldest → newest).
 iloc[-1] = most recently completed candle.
 """
@@ -30,6 +30,8 @@ _MIN_CANDLES = {
     "1m":  300,   # ~5 hours of M1
     "5m":  200,   # ~17 hours of M5
     "15m": 100,   # ~25 hours of M15
+    "1h":  60,    # ~2.5 days of H1
+    "4h":  30,    # ~5 days of H4
 }
 
 

@@ -55,9 +55,9 @@ def validate_regime_accuracy(trades: list) -> dict:
 
 def _expected_regime(model: str) -> str:
     """Return the regime this model is supposed to operate in."""
-    if "M5_MOMENTUM" in model or "MODEL_A" in model:
+    if "OU_GRIND" in model or "MODEL_A" in model:
         return "TRENDING"
-    if "M1_MEANREV" in model or "MODEL_B" in model:
+    if "OU_RANGE" in model or "MODEL_B" in model:
         return "RANGING"
     if "BREAKOUT" in model or "MODEL_C" in model:
         return "ANY"
@@ -162,13 +162,13 @@ def generate_regime_suggestions(accuracy: dict) -> list:
         ap      = metrics.get("accuracy_proxy")
 
         if verdict == "POOR":
-            if "M5_MOMENTUM" in model or "MODEL_A" in model:
+            if "OU_GRIND" in model or "MODEL_A" in model:
                 suggestions.append(
                     f"[{model}] Regime accuracy poor ({ap:.0%}). "
                     "Suggestion: raise Hurst TRENDING threshold from 0.53 → 0.56 "
                     "to require stronger trend confirmation before Model A fires."
                 )
-            elif "M1_MEANREV" in model or "MODEL_B" in model:
+            elif "OU_RANGE" in model or "MODEL_B" in model:
                 suggestions.append(
                     f"[{model}] Regime accuracy poor ({ap:.0%}). "
                     "Suggestion: tighten ADF significance level from 0.05 → 0.01 "

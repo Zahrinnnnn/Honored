@@ -280,9 +280,9 @@ def _status_emoji(status: str) -> str:
 
 def _short_model_name(model: str) -> str:
     return {
-        "M5_MOMENTUM":    "Model A",
-        "M1_MEANREV":     "Model B",
-        "LONDON_BREAKOUT":"Model C",
+        "OU_GRIND":        "Model A",
+        "OU_RANGE":        "Model B",
+        "ASIAN_BREAKOUT":  "Model C",
     }.get(model, model)
 
 

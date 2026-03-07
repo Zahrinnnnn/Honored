@@ -33,6 +33,10 @@ deploy/logs/
 .idea/
 *.swp
 
+# Backtest data and results (generated, not committed)
+data/
+results/
+
 # OS
 .DS_Store
 Thumbs.db

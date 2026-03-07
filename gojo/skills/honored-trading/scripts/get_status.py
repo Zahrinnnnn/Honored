@@ -279,7 +279,9 @@ def main():
         last_decision    = safe_get(conn, "trading_state", "last_risk_decision",  None)
 
         current_session  = safe_get(conn, "session_info",  "current_session",     "unknown")
-        current_regime   = safe_get(conn, "session_info",  "current_regime",      None)
+        h1_bias          = safe_get(conn, "session_info",  "h1_bias",             None)
+        h4_bias          = safe_get(conn, "session_info",  "h4_bias",             None)
+        combined_bias    = safe_get(conn, "session_info",  "combined_bias",       None)
         mins_to_news     = safe_get(conn, "session_info",  "minutes_to_next_news","999")
         asian_high       = safe_get(conn, "session_info",  "asian_range_high",    "0")
         asian_low        = safe_get(conn, "session_info",  "asian_range_low",     "0")
@@ -306,7 +308,7 @@ def main():
                     "entry_price": sig.get("entry_price"),
                     "sl_price":    sig.get("sl_price"),
                     "tp_price":    sig.get("tp_price"),
-                    "regime":      sig.get("regime"),
+                    "h1_bias":     sig.get("h1_bias"),
                     "status":      sig.get("status"),
                     "timestamp":   sig.get("timestamp"),
                 }
@@ -339,7 +341,7 @@ def main():
             "state":              state,
             "account":            account,
             "gold_price":         gold_price,
-            "regime":             current_regime,
+            "htf_bias":           {"h1": h1_bias, "h4": h4_bias, "combined": combined_bias},
             "session":            current_session,
             "consecutive_losses": int(consec_losses or 0),
             "last_trade_result":  last_result,

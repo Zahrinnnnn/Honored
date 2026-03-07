@@ -60,7 +60,7 @@ def evaluate_model(model_name: str, trades: list) -> ModelEvaluation:
     """Full statistical evaluation of a single trading model.
 
     Args:
-        model_name: e.g. "M5_MOMENTUM", "M1_MEANREV", "LONDON_BREAKOUT"
+        model_name: e.g. "OU_GRIND", "OU_RANGE", "ASIAN_BREAKOUT"
         trades:     completed trades for this model only (result IS NOT NULL)
     """
     if len(trades) < _MIN_TRADES:
@@ -260,19 +260,19 @@ def _build_recommendation(
         )
 
     if status == "UNDERPERFORM":
-        if "M5_MOMENTUM" in model:
+        if "OU_GRIND" in model:
             return (
                 f"[{model}] Win rate {win_rate:.0%}. "
                 "Suggestion: raise z-score entry threshold from 1.5 → 2.0 "
                 "to filter weaker pullback signals."
             )
-        if "M1_MEANREV" in model:
+        if "OU_RANGE" in model:
             return (
                 f"[{model}] Win rate {win_rate:.0%}. "
                 "Suggestion: raise OU entry z-score from 2.0 → 2.5, "
                 "or tighten half-life filter to 8–25 bars."
             )
-        if "LONDON_BREAKOUT" in model:
+        if "ASIAN_BREAKOUT" in model:
             return (
                 f"[{model}] Win rate {win_rate:.0%}. "
                 "Suggestion: raise minimum Asian range filter from $3 → $5 "

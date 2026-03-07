@@ -10,8 +10,8 @@ Every test creates a fresh DB and calls agent functions directly
 
 Coverage
 ────────
-- Signal validation with a real StateManager (all 11 checks)
-- Model/regime exclusivity (TRENDING ↔ Model A, RANGING ↔ Model B)
+- Signal validation with a real StateManager (all 12 checks)
+- Regime + H4 bias filtering (regime for Model A/B, H4 for Model C)
 - Session count limits (per-session and daily)
 - Full trade lifecycle: log_trade_open → post_trade_update → log_trade_close
 - Consecutive loss counter: increment, double-increment, reset on win
@@ -21,6 +21,8 @@ Coverage
 - Override flow: halt → clear flags → signal approved again
 - Emergency halt NOT cleared by override alone
 - Signal status written to DB (APPROVED / REJECTED) as GETO does it
+- Trade monitor: check_exit (dict return), breakeven, calculate_pnl
+- Structural break cooldown blocks signals
 
 Run: python -m pytest tests/test_integration.py -v
 """
@@ -29,21 +31,25 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.state_manager import StateManager
-from core.constants import MODEL_A, MODEL_B, MODEL_C
+from core.constants import (
+    MODEL_A, MODEL_B, MODEL_C,
+    HTF_BIAS_BULLISH, HTF_BIAS_BEARISH, HTF_BIAS_NEUTRAL,
+    REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
+    XAUUSD_POINT_VALUE,
+)
 
 from agents.geto.skills.trade_validator import validate
 from agents.geto.agent import _monitor_halt_conditions
 from agents.toji.skills.trade_logger import log_trade_open, log_trade_close
 from agents.toji.skills.state_updater import post_trade_update
 from agents.toji.skills.trade_monitor import check_exit, calculate_pnl
-from core.constants import XAUUSD_POINT_VALUE
 
 
 # ---------------------------------------------------------------------------
@@ -67,33 +73,39 @@ async def _setup(db_path: str, balance: float = 20.0) -> StateManager:
     )
     await sm.set_session_info("current_spread",       "1.5")
     await sm.set_session_info("minutes_to_next_news", "120")
+    # Default regime for clean approval of Model A BUY
+    await sm.set_session_info("current_regime", REGIME_BULLISH_GRIND)
+    # H4 bias for Model C tests
+    await sm.set_session_info("h4_bias", HTF_BIAS_BULLISH)
+    # No active structural break cooldown
+    await sm.set_session_info("structural_break_until", "")
     return sm
 
 
 def _signal(
     model       = MODEL_A,
     direction   = "BUY",
-    regime      = "TRENDING",
     session     = "LONDON_OPEN",
     entry_price = 2345.0,
     sl_price    = 2340.0,
     tp_price    = 2360.0,
     sl_distance = 5.0,
     status      = "PENDING",
+    atr_at_entry = 5.0,
 ) -> dict:
     return {
-        "id":          "test-001",
-        "model":       model,
-        "direction":   direction,
-        "regime":      regime,
-        "session":     session,
-        "entry_price": entry_price,
-        "sl_price":    sl_price,
-        "tp_price":    tp_price,
-        "sl_distance": sl_distance,
-        "status":      status,
-        "reason":      "Integration test signal",
-        "timestamp":   datetime.now(timezone.utc).isoformat(),
+        "id":           "test-001",
+        "model":        model,
+        "direction":    direction,
+        "session":      session,
+        "entry_price":  entry_price,
+        "sl_price":     sl_price,
+        "tp_price":     tp_price,
+        "sl_distance":  sl_distance,
+        "status":       status,
+        "reason":       "Integration test signal",
+        "timestamp":    datetime.now(timezone.utc).isoformat(),
+        "atr_at_entry": atr_at_entry,
     }
 
 
@@ -195,18 +207,6 @@ class TestSignalValidation:
         assert not r.approved
         assert r.fail_reason == "drawdown_ok"
 
-    def test_rejected_on_max_open_trades(self, tmp_path):
-        async def run():
-            sm = await _setup(_db(tmp_path))
-            try:
-                await sm.update_account(open_positions=2)   # MAX_OPEN_TRADES = 2
-                return await _val(sm, _signal())
-            finally:
-                await sm.close()
-        r = asyncio.run(run())
-        assert not r.approved
-        assert r.fail_reason == "open_trades_ok"
-
     def test_rejected_in_news_blackout(self, tmp_path):
         async def run():
             sm = await _setup(_db(tmp_path))
@@ -241,52 +241,156 @@ class TestSignalValidation:
         assert not r.approved
         assert r.fail_reason == "session_valid"
 
-
-# ---------------------------------------------------------------------------
-# 2. Model / regime exclusivity
-# ---------------------------------------------------------------------------
-
-class TestModelExclusivity:
-
-    def test_model_a_rejected_in_ranging(self, tmp_path):
+    def test_wrong_regime_blocks_model_a_buy(self, tmp_path):
+        """TIGHT_RANGE regime should block Model A BUY (needs BULLISH_GRIND)."""
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                return await _val(sm, _signal(model=MODEL_A, regime="RANGING"))
+                await sm.set_session_info("current_regime", REGIME_TIGHT_RANGE)
+                return await _val(sm, _signal(direction="BUY"))
             finally:
                 await sm.close()
         r = asyncio.run(run())
         assert not r.approved
-        assert r.fail_reason == "regime_matches_model"
+        assert r.fail_reason == "regime_and_bias_ok"
 
-    def test_model_b_rejected_in_trending(self, tmp_path):
+    def test_bullish_grind_allows_model_a_buy(self, tmp_path):
+        """BULLISH_GRIND regime should allow Model A BUY."""
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                sig = _signal(model=MODEL_B, regime="TRENDING", session="LONDON_OPEN")
-                return await _val(sm, sig)
+                await sm.set_session_info("current_regime", REGIME_BULLISH_GRIND)
+                return await _val(sm, _signal(direction="BUY"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_bearish_grind_blocks_model_a_buy(self, tmp_path):
+        """BEARISH_GRIND regime should block Model A BUY."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("current_regime", REGIME_BEARISH_GRIND)
+                return await _val(sm, _signal(direction="BUY"))
             finally:
                 await sm.close()
         r = asyncio.run(run())
         assert not r.approved
-        assert r.fail_reason == "regime_matches_model"
+        assert r.fail_reason == "regime_and_bias_ok"
 
-    def test_model_c_approved_regardless_of_regime(self, tmp_path):
+
+# ---------------------------------------------------------------------------
+# 2. Regime + HTF bias exclusivity
+# ---------------------------------------------------------------------------
+
+class TestRegimeBiasExclusivity:
+
+    def test_model_a_sell_requires_bearish_grind(self, tmp_path):
+        """Model A SELL requires regime=BEARISH_GRIND."""
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                sig = _signal(model=MODEL_C, regime="TRENDING", session="LONDON_BREAKOUT")
+                await sm.set_session_info("current_regime", REGIME_BULLISH_GRIND)
+                return await _val(sm, _signal(model=MODEL_A, direction="SELL"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert not r.approved
+        assert r.fail_reason == "regime_and_bias_ok"
+
+    def test_model_a_sell_approved_with_bearish_grind(self, tmp_path):
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("current_regime", REGIME_BEARISH_GRIND)
+                return await _val(sm, _signal(model=MODEL_A, direction="SELL"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_model_b_requires_tight_range(self, tmp_path):
+        """Model B (any direction) requires regime=TIGHT_RANGE."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("current_regime", REGIME_BULLISH_GRIND)
+                return await _val(sm, _signal(model=MODEL_B, direction="BUY"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert not r.approved
+        assert r.fail_reason == "regime_and_bias_ok"
+
+    def test_model_b_approved_with_tight_range(self, tmp_path):
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("current_regime", REGIME_TIGHT_RANGE)
+                return await _val(sm, _signal(model=MODEL_B, direction="BUY"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_model_b_sell_approved_with_tight_range(self, tmp_path):
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("current_regime", REGIME_TIGHT_RANGE)
+                return await _val(sm, _signal(model=MODEL_B, direction="SELL"))
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_model_c_approved_with_neutral_h4(self, tmp_path):
+        """Model C uses h4_bias, not regime. NEUTRAL h4 is fine."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("h4_bias", HTF_BIAS_NEUTRAL)
+                sig = _signal(model=MODEL_C, session="LONDON_BREAKOUT")
                 return await _val(sm, sig, session="LONDON_BREAKOUT", breakout=True)
             finally:
                 await sm.close()
         r = asyncio.run(run())
-        assert r.approved   # Model C fires regardless of regime
+        assert r.approved
+
+    def test_model_c_buy_blocked_by_bearish_h4(self, tmp_path):
+        """Model C BUY requires h4_bias != BEARISH."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("h4_bias", HTF_BIAS_BEARISH)
+                sig = _signal(model=MODEL_C, direction="BUY", session="LONDON_BREAKOUT")
+                return await _val(sm, sig, session="LONDON_BREAKOUT", breakout=True)
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert not r.approved
+        assert r.fail_reason == "regime_and_bias_ok"
+
+    def test_model_c_sell_blocked_by_bullish_h4(self, tmp_path):
+        """Model C SELL requires h4_bias != BULLISH."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("h4_bias", HTF_BIAS_BULLISH)
+                sig = _signal(model=MODEL_C, direction="SELL", session="LONDON_BREAKOUT")
+                return await _val(sm, sig, session="LONDON_BREAKOUT", breakout=True)
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert not r.approved
+        assert r.fail_reason == "regime_and_bias_ok"
 
     def test_model_a_blocked_in_breakout_window(self, tmp_path):
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                sig = _signal(model=MODEL_A, regime="TRENDING", session="LONDON_OPEN")
+                sig = _signal(model=MODEL_A, session="LONDON_OPEN")
                 return await _val(sm, sig, session="LONDON_OPEN", breakout=True)
             finally:
                 await sm.close()
@@ -305,8 +409,8 @@ class TestSessionCountLimits:
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                # M5_MAX_TRADES_PER_SESSION = 3
-                for _ in range(3):
+                # M5_MAX_TRADES_PER_SESSION = 8
+                for _ in range(8):
                     await sm.increment_session_trade_count("LONDON_OPEN", MODEL_A)
                 return await _val(sm, _signal(model=MODEL_A))
             finally:
@@ -319,8 +423,8 @@ class TestSessionCountLimits:
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
-                # 2 trades (limit is 3 → still under)
-                for _ in range(2):
+                # 7 trades (limit is 8 → still under)
+                for _ in range(7):
                     await sm.increment_session_trade_count("LONDON_OPEN", MODEL_A)
                 return await _val(sm, _signal(model=MODEL_A))
             finally:
@@ -334,7 +438,7 @@ class TestSessionCountLimits:
             try:
                 # BREAKOUT_MAX_TRADES_PER_DAY = 1 — uses LONDON_BREAKOUT key
                 await sm.increment_session_trade_count("LONDON_BREAKOUT", MODEL_C)
-                sig = _signal(model=MODEL_C, regime="TRENDING", session="LONDON_BREAKOUT")
+                sig = _signal(model=MODEL_C, session="LONDON_BREAKOUT")
                 return await _val(sm, sig, session="LONDON_BREAKOUT", breakout=True)
             finally:
                 await sm.close()
@@ -386,6 +490,7 @@ class TestTradeLifecycle:
                     state=sm, trade_id=trade_id, result="WIN",
                     exit_price=2360.0, pnl=pnl,
                     balance_after=bal_after, drawdown_pct=dd, duration_mins=dur,
+                    exit_reason="TP_HIT",
                 )
                 open_trades = await sm.get_open_trades()
                 closed      = await sm.get_trades(limit=1)
@@ -418,6 +523,7 @@ class TestTradeLifecycle:
                     state=sm, trade_id=trade_id, result="LOSS",
                     exit_price=2340.0, pnl=pnl,
                     balance_after=bal_after, drawdown_pct=dd, duration_mins=dur,
+                    exit_reason="SL_HIT",
                 )
                 closed  = await sm.get_trades(limit=1)
                 account = await sm.get_account()
@@ -578,7 +684,7 @@ class TestHaltConditions:
         assert asyncio.run(run()) is False
 
     def test_duplicate_halt_not_triggered(self, tmp_path):
-        """Already-halted system: monitor runs twice → 0 duplicate SOFT_HALT alerts."""
+        """Already-halted system: monitor runs twice -> 0 duplicate SOFT_HALT alerts."""
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
@@ -674,7 +780,7 @@ class TestOverrideFlow:
         assert r.approved
 
     def test_emergency_halt_not_cleared_by_halt_flag_alone(self, tmp_path):
-        """emergency_halt_flag remains → not_halted still fails after clearing halt_flag."""
+        """emergency_halt_flag remains -> not_halted still fails after clearing halt_flag."""
         async def run():
             sm = await _setup(_db(tmp_path))
             try:
@@ -748,22 +854,34 @@ class TestTradeMonitorHelpers:
     def test_check_exit_buy_sl(self):
         trade = {"direction": "BUY", "sl_price": 2340.0, "tp_price": 2360.0,
                  "entry_price": 2345.0, "lot_size": 0.04}
-        assert check_exit(trade, 2339.0, 2340.0) == "LOSS"
+        result = check_exit(trade, 2339.0, 2340.0)
+        assert result is not None
+        assert result["result"] == "LOSS"
+        assert result["exit_reason"] == "SL_HIT"
 
     def test_check_exit_buy_tp(self):
         trade = {"direction": "BUY", "sl_price": 2340.0, "tp_price": 2360.0,
                  "entry_price": 2345.0, "lot_size": 0.04}
-        assert check_exit(trade, 2361.0, 2362.0) == "WIN"
+        result = check_exit(trade, 2361.0, 2362.0)
+        assert result is not None
+        assert result["result"] == "WIN"
+        assert result["exit_reason"] == "TP_HIT"
 
     def test_check_exit_sell_sl(self):
         trade = {"direction": "SELL", "sl_price": 2360.0, "tp_price": 2330.0,
                  "entry_price": 2350.0, "lot_size": 0.04}
-        assert check_exit(trade, 2359.0, 2361.0) == "LOSS"
+        result = check_exit(trade, 2359.0, 2361.0)
+        assert result is not None
+        assert result["result"] == "LOSS"
+        assert result["exit_reason"] == "SL_HIT"
 
     def test_check_exit_sell_tp(self):
         trade = {"direction": "SELL", "sl_price": 2360.0, "tp_price": 2330.0,
                  "entry_price": 2350.0, "lot_size": 0.04}
-        assert check_exit(trade, 2329.0, 2330.0) == "WIN"
+        result = check_exit(trade, 2329.0, 2330.0)
+        assert result is not None
+        assert result["result"] == "WIN"
+        assert result["exit_reason"] == "TP_HIT"
 
     def test_check_exit_no_hit(self):
         trade = {"direction": "BUY", "sl_price": 2340.0, "tp_price": 2360.0,
@@ -771,7 +889,7 @@ class TestTradeMonitorHelpers:
         assert check_exit(trade, 2348.0, 2349.0) is None
 
     def test_calculate_pnl_buy_win(self):
-        # BUY: price_diff = exit - entry = +15; pnl = 0.04 × 15 × POINT_VALUE
+        # BUY: price_diff = exit - entry = +15; pnl = 0.04 * 15 * POINT_VALUE
         trade = {"direction": "BUY", "lot_size": 0.04, "entry_price": 2345.0}
         pnl = calculate_pnl(trade, exit_price=2360.0)
         expected = round(0.04 * 15.0 * XAUUSD_POINT_VALUE, 2)
@@ -779,7 +897,7 @@ class TestTradeMonitorHelpers:
         assert pnl > 0
 
     def test_calculate_pnl_buy_loss(self):
-        # BUY: price_diff = exit - entry = -5; pnl = 0.04 × (-5) × POINT_VALUE
+        # BUY: price_diff = exit - entry = -5; pnl = 0.04 * (-5) * POINT_VALUE
         trade = {"direction": "BUY", "lot_size": 0.04, "entry_price": 2345.0}
         pnl = calculate_pnl(trade, exit_price=2340.0)
         expected = round(0.04 * (-5.0) * XAUUSD_POINT_VALUE, 2)
@@ -787,9 +905,69 @@ class TestTradeMonitorHelpers:
         assert pnl < 0
 
     def test_calculate_pnl_sell_win(self):
-        # SELL: price_diff = entry - exit = +20; pnl = 0.04 × 20 × POINT_VALUE
+        # SELL: price_diff = entry - exit = +20; pnl = 0.04 * 20 * POINT_VALUE
         trade = {"direction": "SELL", "lot_size": 0.04, "entry_price": 2350.0}
         pnl = calculate_pnl(trade, exit_price=2330.0)
         expected = round(0.04 * 20.0 * XAUUSD_POINT_VALUE, 2)
         assert pnl == pytest.approx(expected, abs=0.01)
         assert pnl > 0
+
+
+# ---------------------------------------------------------------------------
+# 11. Structural break cooldown
+# ---------------------------------------------------------------------------
+
+class TestStructuralBreakCooldown:
+
+    def test_structural_break_blocks_signal(self, tmp_path):
+        """Active structural break cooldown (future timestamp) should reject the signal."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                # Set structural_break_until to 1 hour in the future
+                future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+                await sm.set_session_info("structural_break_until", future)
+                return await _val(sm, _signal())
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert not r.approved
+        assert r.fail_reason == "structural_break_clear"
+
+    def test_expired_structural_break_allows_signal(self, tmp_path):
+        """Expired structural break cooldown (past timestamp) should allow the signal."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                # Set structural_break_until to 1 hour in the past
+                past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+                await sm.set_session_info("structural_break_until", past)
+                return await _val(sm, _signal())
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_empty_structural_break_allows_signal(self, tmp_path):
+        """Empty structural_break_until means no cooldown — signal allowed."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                await sm.set_session_info("structural_break_until", "")
+                return await _val(sm, _signal())
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert r.approved
+
+    def test_structural_break_check_present_in_checks_dict(self, tmp_path):
+        """The structural_break_clear check should appear in the checks dict."""
+        async def run():
+            sm = await _setup(_db(tmp_path))
+            try:
+                return await _val(sm, _signal())
+            finally:
+                await sm.close()
+        r = asyncio.run(run())
+        assert "structural_break_clear" in r.checks
+        assert r.checks["structural_break_clear"] is True

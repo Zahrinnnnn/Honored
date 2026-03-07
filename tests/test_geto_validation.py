@@ -5,9 +5,10 @@ Tests all validation checks using a mock StateManager (no SQLite, no network).
 
 Coverage
 ────────
-- _regime_ok(): all model/regime combinations
+- _regime_and_bias_ok(): all model/direction/regime/bias combinations
+- _is_structural_break_active(): cooldown logic
 - ValidationResult.summary()
-- validate(): each of the 11 checks — one test per check, pass and fail
+- validate(): each of the 12 checks — one test per check, pass and fail
 - validate(): all checks passing → APPROVED
 - account_monitor.get_account_snapshot(): missing row fallback
 - consecutive_tracker: thresholds
@@ -22,6 +23,7 @@ import sys
 import os
 import asyncio
 
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -29,7 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from agents.geto.skills.trade_validator import (
     validate,
     ValidationResult,
-    _regime_ok,
+    _regime_and_bias_ok,
 )
 from agents.geto.skills.account_monitor   import get_account_snapshot
 from agents.geto.skills.consecutive_tracker import (
@@ -46,9 +48,10 @@ from agents.geto.skills.news_calendar import (
 )
 from core.constants import (
     MODEL_A, MODEL_B, MODEL_C,
+    HTF_BIAS_BULLISH, HTF_BIAS_BEARISH, HTF_BIAS_NEUTRAL,
+    REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
     MAX_CONSECUTIVE_LOSSES,
     MAX_DRAWDOWN_PCT,
-    MAX_OPEN_TRADES,
     MAX_SPREAD_DOLLARS,
     NEWS_BLACKOUT_MINUTES,
 )
@@ -70,6 +73,9 @@ def _make_state(
     pause_flag:         bool  = False,
     halt_flag:          bool  = False,
     emergency_halt:     bool  = False,
+    current_regime:     str   = REGIME_BULLISH_GRIND,
+    h4_bias:            str   = HTF_BIAS_BULLISH,
+    structural_break_until: str = "",
 ) -> MagicMock:
     """Build a fully pre-configured mock StateManager."""
     state = MagicMock()
@@ -86,8 +92,11 @@ def _make_state(
 
     async def _get_session_info(key):
         data = {
-            "minutes_to_next_news": str(minutes_to_news),
-            "current_spread":       str(spread),
+            "minutes_to_next_news":    str(minutes_to_news),
+            "current_spread":          str(spread),
+            "current_regime":          current_regime,
+            "h4_bias":                 h4_bias,
+            "structural_break_until":  structural_break_until,
         }
         return data.get(key, "")
 
@@ -103,7 +112,6 @@ def _make_state(
 
     state.get_system_flag = AsyncMock(side_effect=_get_system_flag)
 
-    # Write methods (not tested for return value, just that they're called)
     state.set_trading_state = AsyncMock()
     state.set_system_flag   = AsyncMock()
     state.push_alert        = AsyncMock()
@@ -115,7 +123,7 @@ def _make_signal(
     model:     str = MODEL_A,
     direction: str = "BUY",
     session:   str = "LONDON_OPEN",
-    regime:    str = "TRENDING",
+    regime:    str = HTF_BIAS_BULLISH,
 ) -> dict:
     return {
         "id":          "test-uuid",
@@ -138,34 +146,81 @@ def run(coro):
 
 
 # ---------------------------------------------------------------------------
-# _regime_ok unit tests
+# _regime_and_bias_ok unit tests
 # ---------------------------------------------------------------------------
 
-class TestRegimeOk:
-    def test_model_a_trending(self):
-        assert _regime_ok(MODEL_A, "TRENDING") is True
+class TestRegimeAndBiasOk:
+    # Model A — requires exact regime match (BULLISH_GRIND for BUY, BEARISH_GRIND for SELL)
+    def test_model_a_buy_bullish_grind(self):
+        assert _regime_and_bias_ok(MODEL_A, "BUY", REGIME_BULLISH_GRIND, HTF_BIAS_NEUTRAL) is True
 
-    def test_model_a_ranging_fails(self):
-        assert _regime_ok(MODEL_A, "RANGING") is False
+    def test_model_a_sell_bearish_grind(self):
+        assert _regime_and_bias_ok(MODEL_A, "SELL", REGIME_BEARISH_GRIND, HTF_BIAS_NEUTRAL) is True
 
-    def test_model_a_volatile_fails(self):
-        assert _regime_ok(MODEL_A, "VOLATILE") is False
+    def test_model_a_buy_bearish_grind(self):
+        assert _regime_and_bias_ok(MODEL_A, "BUY", REGIME_BEARISH_GRIND, HTF_BIAS_NEUTRAL) is False
 
-    def test_model_b_ranging(self):
-        assert _regime_ok(MODEL_B, "RANGING") is True
+    def test_model_a_sell_bullish_grind(self):
+        assert _regime_and_bias_ok(MODEL_A, "SELL", REGIME_BULLISH_GRIND, HTF_BIAS_NEUTRAL) is False
 
-    def test_model_b_trending_fails(self):
-        assert _regime_ok(MODEL_B, "TRENDING") is False
+    def test_model_a_buy_tight_range(self):
+        assert _regime_and_bias_ok(MODEL_A, "BUY", REGIME_TIGHT_RANGE, HTF_BIAS_NEUTRAL) is False
 
-    def test_model_b_volatile_fails(self):
-        assert _regime_ok(MODEL_B, "VOLATILE") is False
+    # Model B — requires TIGHT_RANGE for any direction
+    def test_model_b_buy_tight_range(self):
+        assert _regime_and_bias_ok(MODEL_B, "BUY", REGIME_TIGHT_RANGE, HTF_BIAS_NEUTRAL) is True
 
-    def test_model_c_any_regime(self):
-        for regime in ("TRENDING", "RANGING", "VOLATILE"):
-            assert _regime_ok(MODEL_C, regime) is True, f"MODEL_C should accept {regime}"
+    def test_model_b_sell_tight_range(self):
+        assert _regime_and_bias_ok(MODEL_B, "SELL", REGIME_TIGHT_RANGE, HTF_BIAS_NEUTRAL) is True
+
+    def test_model_b_buy_bullish_grind(self):
+        assert _regime_and_bias_ok(MODEL_B, "BUY", REGIME_BULLISH_GRIND, HTF_BIAS_NEUTRAL) is False
+
+    # Model C — uses H4 bias (not regime)
+    def test_model_c_buy_neutral(self):
+        assert _regime_and_bias_ok(MODEL_C, "BUY", "", HTF_BIAS_NEUTRAL) is True
+
+    def test_model_c_buy_bearish(self):
+        assert _regime_and_bias_ok(MODEL_C, "BUY", "", HTF_BIAS_BEARISH) is False
+
+    def test_model_c_sell_bullish(self):
+        assert _regime_and_bias_ok(MODEL_C, "SELL", "", HTF_BIAS_BULLISH) is False
+
+    def test_model_c_sell_neutral(self):
+        assert _regime_and_bias_ok(MODEL_C, "SELL", "", HTF_BIAS_NEUTRAL) is True
 
     def test_unknown_model_fails(self):
-        assert _regime_ok("UNKNOWN", "TRENDING") is False
+        assert _regime_and_bias_ok("UNKNOWN", "BUY", REGIME_BULLISH_GRIND, HTF_BIAS_BULLISH) is False
+
+
+# ---------------------------------------------------------------------------
+# _is_structural_break_active / structural_break_clear tests
+# ---------------------------------------------------------------------------
+
+class TestStructuralBreakClear:
+
+    def test_no_cooldown(self):
+        """Empty structural_break_until means no cooldown — check passes."""
+        state  = _make_state(structural_break_until="")
+        signal = _make_signal()
+        result = run(validate(signal, state, current_session="LONDON_OPEN"))
+        assert result.checks["structural_break_clear"] is True
+
+    def test_active_cooldown(self):
+        """Future datetime means cooldown active — check fails."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        state  = _make_state(structural_break_until=future)
+        signal = _make_signal()
+        result = run(validate(signal, state, current_session="LONDON_OPEN"))
+        assert result.checks["structural_break_clear"] is False
+
+    def test_expired_cooldown(self):
+        """Past datetime means cooldown expired — check passes."""
+        past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        state  = _make_state(structural_break_until=past)
+        signal = _make_signal()
+        result = run(validate(signal, state, current_session="LONDON_OPEN"))
+        assert result.checks["structural_break_clear"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +289,8 @@ class TestValidateChecks:
         assert result.checks["model_priority_ok"] is False
 
     def test_model_priority_model_c_during_breakout_passes(self):
-        state  = _make_state(trade_count=0)
-        signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", regime="TRENDING")
+        state  = _make_state(trade_count=0, h4_bias=HTF_BIAS_BULLISH)
+        signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", direction="BUY")
         result = run(validate(
             signal, state,
             current_session="LONDON_BREAKOUT",
@@ -250,72 +305,84 @@ class TestValidateChecks:
                               is_breakout_window=False))
         assert result.checks["model_priority_ok"] is True
 
-    # ── 3. regime_matches_model ─────────────────────────────────────────────
+    # ── 3. regime_and_bias_ok ─────────────────────────────────────────────
 
-    def test_regime_model_a_trending_passes(self):
-        state  = _make_state()
-        signal = _make_signal(model=MODEL_A, regime="TRENDING")
+    def test_regime_model_a_buy_bullish_grind_passes(self):
+        state  = _make_state(current_regime=REGIME_BULLISH_GRIND)
+        signal = _make_signal(model=MODEL_A, direction="BUY")
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["regime_matches_model"] is True
+        assert result.checks["regime_and_bias_ok"] is True
 
-    def test_regime_model_a_ranging_fails(self):
-        state  = _make_state()
-        signal = _make_signal(model=MODEL_A, regime="RANGING")
+    def test_regime_model_a_sell_bearish_grind_passes(self):
+        state  = _make_state(current_regime=REGIME_BEARISH_GRIND)
+        signal = _make_signal(model=MODEL_A, direction="SELL")
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["regime_matches_model"] is False
+        assert result.checks["regime_and_bias_ok"] is True
 
-    def test_regime_model_b_ranging_passes(self):
-        state  = _make_state(trade_count=0)
-        signal = _make_signal(model=MODEL_B, regime="RANGING")
+    def test_regime_model_a_buy_bearish_grind_fails(self):
+        state  = _make_state(current_regime=REGIME_BEARISH_GRIND)
+        signal = _make_signal(model=MODEL_A, direction="BUY")
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["regime_matches_model"] is True
+        assert result.checks["regime_and_bias_ok"] is False
 
-    def test_regime_model_b_trending_fails(self):
-        state  = _make_state()
-        signal = _make_signal(model=MODEL_B, regime="TRENDING")
+    def test_regime_model_b_buy_tight_range_passes(self):
+        state  = _make_state(current_regime=REGIME_TIGHT_RANGE)
+        signal = _make_signal(model=MODEL_B, direction="BUY")
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["regime_matches_model"] is False
+        assert result.checks["regime_and_bias_ok"] is True
 
-    def test_regime_model_c_any_passes(self):
-        for regime in ("TRENDING", "RANGING", "VOLATILE"):
-            state  = _make_state(trade_count=0)
-            signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", regime=regime)
-            result = run(validate(
-                signal, state,
-                current_session="LONDON_BREAKOUT",
-                is_breakout_window=True,
-            ))
-            assert result.checks["regime_matches_model"] is True, f"MODEL_C failed for {regime}"
+    def test_regime_model_b_sell_bullish_grind_fails(self):
+        state  = _make_state(current_regime=REGIME_BULLISH_GRIND)
+        signal = _make_signal(model=MODEL_B, direction="SELL")
+        result = run(validate(signal, state, current_session="LONDON_OPEN"))
+        assert result.checks["regime_and_bias_ok"] is False
+
+    def test_regime_model_c_buy_h4_bearish_fails(self):
+        state  = _make_state(h4_bias=HTF_BIAS_BEARISH)
+        signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", direction="BUY")
+        result = run(validate(
+            signal, state,
+            current_session="LONDON_BREAKOUT",
+            is_breakout_window=True,
+        ))
+        assert result.checks["regime_and_bias_ok"] is False
+
+    def test_regime_empty_string_fails_model_a(self):
+        """Missing regime (empty string) should fail for Model A."""
+        state  = _make_state(current_regime="")
+        signal = _make_signal(model=MODEL_A, direction="BUY")
+        result = run(validate(signal, state, current_session="LONDON_OPEN"))
+        assert result.checks["regime_and_bias_ok"] is False
 
     # ── 4. session_trades_within_limit ──────────────────────────────────────
 
     def test_session_trades_below_limit_passes(self):
-        state  = _make_state(trade_count=2)   # limit for MODEL_A is 3
+        state  = _make_state(trade_count=1)   # limit for MODEL_A is 2
         signal = _make_signal(model=MODEL_A)
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
         assert result.checks["session_trades_within_limit"] is True
 
     def test_session_trades_at_limit_fails(self):
-        state  = _make_state(trade_count=3)   # exactly at limit
+        state  = _make_state(trade_count=8)   # exactly at limit (8)
         signal = _make_signal(model=MODEL_A)
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
         assert result.checks["session_trades_within_limit"] is False
 
     def test_session_trades_model_b_limit(self):
-        # MODEL_B limit = 5
-        state  = _make_state(trade_count=4)
-        signal = _make_signal(model=MODEL_B, regime="RANGING")
+        # MODEL_B limit = 8
+        state  = _make_state(trade_count=7, current_regime=REGIME_TIGHT_RANGE)
+        signal = _make_signal(model=MODEL_B, direction="BUY")
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
         assert result.checks["session_trades_within_limit"] is True
 
-        state2 = _make_state(trade_count=5)
+        state2 = _make_state(trade_count=8, current_regime=REGIME_TIGHT_RANGE)
         result2 = run(validate(signal, state2, current_session="LONDON_OPEN"))
         assert result2.checks["session_trades_within_limit"] is False
 
     def test_session_trades_model_c_daily_limit(self):
         # MODEL_C limit = 1
-        state  = _make_state(trade_count=0)
-        signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", regime="TRENDING")
+        state  = _make_state(trade_count=0, h4_bias=HTF_BIAS_BULLISH)
+        signal = _make_signal(model=MODEL_C, session="LONDON_BREAKOUT", direction="BUY")
         result = run(validate(
             signal, state,
             current_session="LONDON_BREAKOUT",
@@ -323,7 +390,7 @@ class TestValidateChecks:
         ))
         assert result.checks["session_trades_within_limit"] is True
 
-        state2 = _make_state(trade_count=1)
+        state2 = _make_state(trade_count=1, h4_bias=HTF_BIAS_BULLISH)
         result2 = run(validate(
             signal, state2,
             current_session="LONDON_BREAKOUT",
@@ -370,26 +437,6 @@ class TestValidateChecks:
         signal = _make_signal()
         result = run(validate(signal, state, current_session="LONDON_OPEN"))
         assert result.checks["drawdown_ok"] is False
-
-    # ── 7. open_trades_ok ───────────────────────────────────────────────────
-
-    def test_open_trades_below_max_passes(self):
-        state  = _make_state(open_positions=1)
-        signal = _make_signal()
-        result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["open_trades_ok"] is True
-
-    def test_open_trades_zero_passes(self):
-        state  = _make_state(open_positions=0)
-        signal = _make_signal()
-        result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["open_trades_ok"] is True
-
-    def test_open_trades_at_max_fails(self):
-        state  = _make_state(open_positions=MAX_OPEN_TRADES)   # 2
-        signal = _make_signal()
-        result = run(validate(signal, state, current_session="LONDON_OPEN"))
-        assert result.checks["open_trades_ok"] is False
 
     # ── 8. news_clear ───────────────────────────────────────────────────────
 
@@ -494,8 +541,10 @@ class TestValidateApproved:
             pause_flag=False,
             halt_flag=False,
             emergency_halt=False,
+            current_regime=REGIME_BULLISH_GRIND,
+            h4_bias=HTF_BIAS_BULLISH,
         )
-        signal = _make_signal(model=MODEL_A, session="LONDON_OPEN", regime="TRENDING")
+        signal = _make_signal(model=MODEL_A, session="LONDON_OPEN", direction="BUY")
         result = run(validate(
             signal, state,
             current_session="LONDON_OPEN",
@@ -513,8 +562,9 @@ class TestValidateApproved:
             dd_pct=5.0,
             open_positions=1,
             minutes_to_news=60.0,
+            current_regime=REGIME_TIGHT_RANGE,
         )
-        signal = _make_signal(model=MODEL_B, session="NY_OVERLAP", regime="RANGING")
+        signal = _make_signal(model=MODEL_B, session="NY_OVERLAP", direction="BUY")
         result = run(validate(
             signal, state,
             current_session="NY_OVERLAP",
@@ -524,11 +574,15 @@ class TestValidateApproved:
         assert result.approved is True
 
     def test_all_checks_pass_model_c(self):
-        state  = _make_state(trade_count=0, minutes_to_news=999.0)
+        state  = _make_state(
+            trade_count=0,
+            minutes_to_news=999.0,
+            h4_bias=HTF_BIAS_BULLISH,
+        )
         signal = _make_signal(
             model=MODEL_C,
             session="LONDON_BREAKOUT",
-            regime="TRENDING",
+            direction="BUY",
         )
         result = run(validate(
             signal, state,
@@ -550,7 +604,6 @@ class TestValidateApproved:
             pause_flag=True,
             halt_flag=True,
         )
-        # Also make session invalid to ensure it's fail_reason = "session_valid"
         signal = _make_signal()
         result = run(validate(signal, state, current_session=None))
         assert result.fail_reason == "session_valid"  # first in order
@@ -671,18 +724,6 @@ class TestNewsCalendar:
         assert run(get_minutes_to_next_news(state)) == 120.5
 
     def test_returns_zero_when_missing_and_fetcher_fails(self):
-        state = MagicMock()
-        state.get_session_info = AsyncMock(return_value="")
-        with patch(
-            "agents.geto.skills.news_calendar.get_minutes_to_next_news",
-            new=AsyncMock(return_value=0.0),
-        ):
-            # Directly test fallback failure path
-            async def _run():
-                import agents.geto.skills.news_calendar as nc
-                with patch.object(nc, "get_minutes_to_next_news", AsyncMock(return_value=0.0)):
-                    return await nc.is_news_clear(state)
-            # Simpler: check is_news_clear is False when minutes = 0
         state2 = MagicMock()
         state2.get_session_info = AsyncMock(return_value="0.0")
         assert run(is_news_clear(state2)) is False
@@ -702,9 +743,8 @@ class TestNewsCalendar:
     def test_fallback_returns_zero_on_fetcher_error(self):
         """When session_info is empty and news_fetcher raises, returns 0.0 (fail-safe)."""
         state = MagicMock()
-        state.get_session_info = AsyncMock(return_value="")   # nothing from NANAMI
+        state.get_session_info = AsyncMock(return_value="")
 
-        # Simulate import failure inside the lazy import in get_minutes_to_next_news
         import builtins
         real_import = builtins.__import__
 
@@ -729,12 +769,10 @@ class TestHaltConditions:
         from agents.geto.agent import _monitor_halt_conditions
 
         state = MagicMock()
-        # emergency halt not yet triggered
         state.get_system_flag = AsyncMock(side_effect=lambda key: {
             "emergency_halt_flag": False,
             "halt_flag": False,
         }[key])
-        # 3 consecutive losses = soft halt triggered
         state.get_account = AsyncMock(
             return_value={"current_dd_pct": 0.0}
         )
@@ -744,9 +782,7 @@ class TestHaltConditions:
 
         run(_monitor_halt_conditions(state))
 
-        # Should have set halt_flag = True
         state.set_system_flag.assert_any_call("halt_flag", True)
-        # Should have pushed a SOFT_HALT alert
         assert state.push_alert.called
         call_args = state.push_alert.call_args
         assert call_args[0][0] == "SOFT_HALT"
@@ -759,7 +795,6 @@ class TestHaltConditions:
             "emergency_halt_flag": False,
             "halt_flag": False,
         }[key])
-        # 50% drawdown = emergency halt triggered
         state.get_account = AsyncMock(
             return_value={"current_dd_pct": 50.0}
         )
@@ -769,10 +804,8 @@ class TestHaltConditions:
 
         run(_monitor_halt_conditions(state))
 
-        # Both flags set
         state.set_system_flag.assert_any_call("emergency_halt_flag", True)
         state.set_system_flag.assert_any_call("halt_flag", True)
-        # EMERGENCY_HALT alert pushed
         alert_types = [call[0][0] for call in state.push_alert.call_args_list]
         assert "EMERGENCY_HALT" in alert_types
 
@@ -780,7 +813,6 @@ class TestHaltConditions:
         from agents.geto.agent import _monitor_halt_conditions
 
         state = MagicMock()
-        # Already in emergency halt
         state.get_system_flag = AsyncMock(side_effect=lambda key: {
             "emergency_halt_flag": True,
             "halt_flag": True,
@@ -792,7 +824,6 @@ class TestHaltConditions:
 
         run(_monitor_halt_conditions(state))
 
-        # No duplicate flags or alerts
         state.set_system_flag.assert_not_called()
         state.push_alert.assert_not_called()
 

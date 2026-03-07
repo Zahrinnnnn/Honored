@@ -8,40 +8,41 @@ Validation checks (all must pass for APPROVED)
 ───────────────────────────────────────────────
  1. session_valid              — live session is an active trading session
  2. model_priority_ok         — breakout window not violated (Model C exclusive)
- 3. regime_matches_model      — TRENDING↔Model A, RANGING↔Model B, any↔Model C
+ 3. regime_and_bias_ok        — regime/H4 bias allows the trade direction
  4. session_trades_within_limit — count < model's per-session max
  5. consecutive_losses_ok     — streak < MAX_CONSECUTIVE_LOSSES (3)
  6. drawdown_ok               — current_dd_pct < 50%
- 7. open_trades_ok            — open_positions < MAX_OPEN_TRADES (2)
- 8. news_clear                — minutes_to_next_news > NEWS_BLACKOUT_MINUTES (30)
- 9. spread_acceptable         — current_spread < MAX_SPREAD_DOLLARS ($4.00)
-10. not_paused                — pause_flag is False
-11. not_halted                — halt_flag AND emergency_halt_flag are both False
-
-Note: the architecture doc counts these as 10 checks; not_paused and
-not_halted are the 10th check split into two sub-flags for precise logging.
+ 7. news_clear                — minutes_to_next_news > NEWS_BLACKOUT_MINUTES (30)
+ 8. spread_acceptable         — current_spread < MAX_SPREAD_DOLLARS ($4.00)
+ 9. not_paused                — pause_flag is False
+10. not_halted                — halt_flag AND emergency_halt_flag are both False
+11. structural_break_clear    — no active structural break cooldown
 
 Public API
 ──────────
 validate(signal, state, current_session, is_breakout_window, current_spread)
     → ValidationResult
 
-_regime_ok(model, regime) → bool   (exposed for unit testing)
+_regime_and_bias_ok(model, direction, regime, h4_bias) → bool   (exposed for testing)
 """
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from core.constants import (
     MODEL_A, MODEL_B, MODEL_C,
     ACTIVE_SESSIONS,
+    HTF_BIAS_BULLISH, HTF_BIAS_BEARISH,
     MODEL_SESSION_LIMITS,
     MAX_CONSECUTIVE_LOSSES,
     MAX_DRAWDOWN_PCT,
-    MAX_OPEN_TRADES,
     MAX_SPREAD_DOLLARS,
     NEWS_BLACKOUT_MINUTES,
+    REGIME_BULLISH_GRIND,
+    REGIME_BEARISH_GRIND,
+    REGIME_TIGHT_RANGE,
 )
 from core.state_manager import StateManager
 from agents.geto.skills.account_monitor import get_account_snapshot
@@ -65,7 +66,7 @@ class ValidationResult:
 
     Attributes:
         approved:    True if ALL checks passed.
-        checks:      Ordered dict of check_name → bool (all 11 checks).
+        checks:      Ordered dict of check_name → bool (all 12 checks).
         fail_reason: Name of the first failed check, or "" if approved.
         signal:      The original signal dict that was validated.
     """
@@ -83,25 +84,56 @@ class ValidationResult:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Regime compatibility helper
+# Regime + bias compatibility helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _regime_ok(model: str, regime: str) -> bool:
+def _regime_and_bias_ok(
+    model: str, direction: str, regime: str, h4_bias: str,
+) -> bool:
     """
-    Returns True if the regime is compatible with the model.
+    Returns True if the regime/bias allows this trade direction.
 
-    MODEL_A (M5_MOMENTUM)   → TRENDING only
-    MODEL_B (M1_MEANREV)    → RANGING only
-    MODEL_C (LONDON_BREAKOUT) → any regime (breakout fires regardless)
+    Model A (OU Grind):
+        BUY  → requires regime == BULLISH_GRIND
+        SELL → requires regime == BEARISH_GRIND
+
+    Model B (OU Range):
+        Any direction → requires regime == TIGHT_RANGE
+
+    Model C (London Breakout):
+        BUY  → requires h4_bias != BEARISH
+        SELL → requires h4_bias != BULLISH
     """
     if model == MODEL_A:
-        return regime == "TRENDING"
+        if direction == "BUY":
+            return regime == REGIME_BULLISH_GRIND
+        if direction == "SELL":
+            return regime == REGIME_BEARISH_GRIND
+        return False
+
     if model == MODEL_B:
-        return regime == "RANGING"
+        return regime == REGIME_TIGHT_RANGE
+
     if model == MODEL_C:
+        if direction == "BUY":
+            return h4_bias != HTF_BIAS_BEARISH
+        if direction == "SELL":
+            return h4_bias != HTF_BIAS_BULLISH
         return True
-    logger.warning("_regime_ok: unknown model '%s'", model)
+
+    logger.warning("_regime_and_bias_ok: unknown model '%s'", model)
     return False
+
+
+def _is_structural_break_active(sb_until_str: str) -> bool:
+    """Returns True if a structural break cooldown is currently active."""
+    if not sb_until_str:
+        return False
+    try:
+        sb_time = datetime.fromisoformat(sb_until_str)
+        return datetime.now(timezone.utc) < sb_time
+    except (ValueError, TypeError):
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,11 +148,11 @@ async def validate(
     current_spread:     float = 0.0,
 ) -> ValidationResult:
     """
-    Run all 11 validation checks against the signal.
+    Run all 12 validation checks against the signal.
 
     Args:
         signal:             Signal dict from NANAMI.
-                            Required keys: model, session, regime.
+                            Required keys: model, session, direction.
         state:              Open StateManager — all SQLite reads happen here.
         current_session:    Live session name from session_detector (or None).
         is_breakout_window: True if 07:00–07:30 GMT right now.
@@ -129,29 +161,27 @@ async def validate(
     Returns:
         ValidationResult with all check outcomes and the first fail reason.
     """
-    model   = signal.get("model",   "")
-    session = signal.get("session", "")
-    regime  = signal.get("regime",  "")
+    model     = signal.get("model",     "")
+    session   = signal.get("session",   "")
+    direction = signal.get("direction", "")
 
     checks: dict[str, bool] = {}
 
     # ── 1. session_valid ────────────────────────────────────────────────────
-    # Live session must be a recognised trading session (not None, not blackout).
-    # Includes LONDON_BREAKOUT — model_priority_ok enforces Model-C exclusivity.
     checks["session_valid"] = current_session in _ALLOWED_SESSIONS
 
     # ── 2. model_priority_ok ────────────────────────────────────────────────
-    # During London Breakout window (07:00–07:30), ONLY Model C may fire.
     if is_breakout_window:
         checks["model_priority_ok"] = (model == MODEL_C)
     else:
         checks["model_priority_ok"] = True
 
-    # ── 3. regime_matches_model ─────────────────────────────────────────────
-    checks["regime_matches_model"] = _regime_ok(model, regime)
+    # ── 3. regime_and_bias_ok ───────────────────────────────────────────────
+    regime = await state.get_session_info("current_regime") or ""
+    h4_bias = await state.get_session_info("h4_bias") or ""
+    checks["regime_and_bias_ok"] = _regime_and_bias_ok(model, direction, regime, h4_bias)
 
     # ── 4. session_trades_within_limit ──────────────────────────────────────
-    # Model C uses "LONDON_BREAKOUT" as its session key (daily limit, not per-session).
     session_key = "LONDON_BREAKOUT" if model == MODEL_C else session
     trade_count = await state.get_session_trade_count(session_key, model)
     limit       = MODEL_SESSION_LIMITS.get(model, 0)
@@ -165,10 +195,7 @@ async def validate(
     account = await get_account_snapshot(state)
     checks["drawdown_ok"] = account["current_dd_pct"] < (MAX_DRAWDOWN_PCT * 100)
 
-    # ── 7. open_trades_ok ───────────────────────────────────────────────────
-    checks["open_trades_ok"] = account["open_positions"] < MAX_OPEN_TRADES
-
-    # ── 8. news_clear ────────────────────────────────────────────────────────
+    # ── 8. news_clear ───────────────────────────────────────────────────────
     mins_to_news = await get_minutes_to_next_news(state)
     checks["news_clear"] = mins_to_news > NEWS_BLACKOUT_MINUTES
 
@@ -183,6 +210,10 @@ async def validate(
         not await state.get_system_flag("halt_flag")
         and not await state.get_system_flag("emergency_halt_flag")
     )
+
+    # ── 12. structural_break_clear ──────────────────────────────────────────
+    sb_until = await state.get_session_info("structural_break_until") or ""
+    checks["structural_break_clear"] = not _is_structural_break_active(sb_until)
 
     # ── Decision ────────────────────────────────────────────────────────────
     fail_reason = next((name for name, ok in checks.items() if not ok), "")
