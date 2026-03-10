@@ -15,7 +15,6 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 
-# Reuse helpers from get_status.py in the same directory
 _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DIR)
 from get_status import (
@@ -29,86 +28,147 @@ from get_status import (
 
 _load_honored_env()
 
+# ── formatting helpers ────────────────────────────────────────────────────────
+
+_STATE_ICON = {
+    "RUNNING":        "🟢",
+    "PAUSED":         "🟡",
+    "HALTED":         "🔴",
+    "EMERGENCY HALT": "🚨",
+}
+
+_REGIME_LABEL = {
+    "BULLISH_GRIND":  "Bullish Grind",
+    "BEARISH_GRIND":  "Bearish Grind",
+    "TIGHT_RANGE":    "Tight Range",
+    "BULLISH_BLOWOFF":"Bullish Blowoff",
+    "BEARISH_PANIC":  "Bearish Panic",
+    "TOXIC_CHOP":     "Toxic Chop",
+}
+
+_SESSION_LABEL = {
+    "LONDON_OPEN":     "London Open",
+    "LONDON_BREAKOUT": "London Breakout",
+    "NY_OVERLAP":      "NY Overlap",
+    "NY_CLOSE":        "NY Close",
+    "ASIAN_BLACKOUT":  "Asian Blackout",
+    "NONE":            "—",
+}
+
+_H4_LABEL = {
+    "BULLISH": "↑ Bullish",
+    "BEARISH": "↓ Bearish",
+    "NEUTRAL": "→ Neutral",
+}
+
+
+def _fmt_regime(r):
+    return _REGIME_LABEL.get(r, r.replace("_", " ").title()) if r else "Detecting..."
+
+
+def _fmt_session(s):
+    return _SESSION_LABEL.get(s, s.replace("_", " ").title()) if s else "—"
+
+
+def _fmt_h4(h):
+    return _H4_LABEL.get(h, h) if h else "—"
+
+
+def _fmt_pnl(pnl):
+    return f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+
 
 def main():
     try:
         conn = sqlite3.connect(db_path())
 
-        account       = get_account_row(conn)
-        today         = get_today_stats(conn)
-        open_trades   = get_open_trades(conn)
+        account     = get_account_row(conn)
+        today       = get_today_stats(conn)
+        open_trades = get_open_trades(conn)
 
-        state           = "RUNNING"
-        pause_flag      = safe_get(conn, "system_state", "pause_flag",          "false")
-        halt_flag       = safe_get(conn, "system_state", "halt_flag",           "false")
-        emergency_flag  = safe_get(conn, "system_state", "emergency_halt_flag", "false")
-        if emergency_flag == "true":
+        # ── system state ──────────────────────────────────────────────────────
+        state = "RUNNING"
+        if safe_get(conn, "system_state", "emergency_halt_flag", "false") == "true":
             state = "EMERGENCY HALT"
-        elif halt_flag == "true":
+        elif safe_get(conn, "system_state", "halt_flag", "false") == "true":
             state = "HALTED"
-        elif pause_flag == "true":
+        elif safe_get(conn, "system_state", "pause_flag", "false") == "true":
             state = "PAUSED"
 
-        session     = safe_get(conn, "session_info",  "current_session",      "unknown")
-        regime      = safe_get(conn, "session_info",  "current_regime",       None)
-        h4_bias     = safe_get(conn, "session_info",  "h4_bias",              None)
-        bid         = safe_get(conn, "session_info",  "current_bid",          None)
-        ask         = safe_get(conn, "session_info",  "current_ask",          None)
-        spread      = safe_get(conn, "session_info",  "current_spread",       None)
-        mins_news   = safe_get(conn, "session_info",  "minutes_to_next_news", "999")
-        consec      = safe_get(conn, "trading_state", "consecutive_losses",   "0")
-        last_dec    = safe_get(conn, "trading_state", "last_risk_decision",   None)
-        last_sig_raw= safe_get(conn, "trading_state", "last_signal",          None)
+        session   = safe_get(conn, "session_info",  "current_session",      "—")
+        regime    = safe_get(conn, "session_info",  "current_regime",       None)
+        h4_bias   = safe_get(conn, "session_info",  "h4_bias",              None)
+        bid       = safe_get(conn, "session_info",  "current_bid",          None)
+        ask       = safe_get(conn, "session_info",  "current_ask",          None)
+        spread    = safe_get(conn, "session_info",  "current_spread",       None)
+        mins_news = safe_get(conn, "session_info",  "minutes_to_next_news", "999")
+        consec    = safe_get(conn, "trading_state", "consecutive_losses",   "0")
+        last_dec  = safe_get(conn, "trading_state", "last_risk_decision",   None)
+        last_sig_raw = safe_get(conn, "trading_state", "last_signal",       None)
 
         conn.close()
 
         now_utc = datetime.now(timezone.utc).strftime("%H:%M UTC")
+        icon    = _STATE_ICON.get(state, "⚡")
 
-        # Gold price line
+        # ── gold price ────────────────────────────────────────────────────────
         if bid and ask:
             try:
-                gold_line = f"Gold: ${float(bid):.2f} – ${float(ask):.2f}"
-                if spread:
-                    gold_line += f"  (spread ${float(spread):.2f})"
+                sp = f"  (spread ${float(spread):.2f})" if spread else ""
+                gold_line = f"🥇  ${float(bid):,.2f} – ${float(ask):,.2f}{sp}"
             except Exception:
-                gold_line = "Gold: price unavailable"
+                gold_line = "🥇  price unavailable"
         else:
-            gold_line = "Gold: no price yet (NANAMI starting up)"
+            gold_line = "🥇  no price yet"
 
-        # Last signal
-        sig_line = "Last signal: none yet"
+        # ── last signal ───────────────────────────────────────────────────────
+        sig_line = "—"
         if last_sig_raw:
             try:
                 s = json.loads(last_sig_raw)
-                sig_line = (
-                    f"Last signal: {s.get('model','')} {s.get('direction','')} "
-                    f"@ ${float(s.get('entry_price',0)):.2f}  [{s.get('status','')}]"
-                )
+                model  = s.get("model", "").replace("_", " ").title()
+                dirn   = s.get("direction", "")
+                price  = float(s.get("entry_price", 0))
+                status = s.get("status", "")
+                sig_line = f"{model} {dirn} @ ${price:,.2f}  [{status}]"
             except Exception:
                 pass
 
-        # Open trades
+        # ── open trades ───────────────────────────────────────────────────────
         if open_trades:
-            ot_lines = [f"  #{t['id']} {t['model']} {t['direction']} entry=${t['entry_price']:.2f} lot={t['lot_size']:.2f}" for t in open_trades]
-            ot_block = "Open trades:\n" + "\n".join(ot_lines)
+            rows = []
+            for t in open_trades:
+                rows.append(
+                    f"  #{t['id']}  {t['model'].replace('_',' ').title()}  "
+                    f"{t['direction']}  @ ${t['entry_price']:.2f}  "
+                    f"SL ${t['sl_price']:.2f}  lot {t['lot_size']:.2f}"
+                )
+            trades_block = "Open trades:\n" + "\n".join(rows)
         else:
-            ot_block = "Open trades: none"
+            trades_block = "Open trades: none"
 
-        # Today P&L sign
-        pnl = today['total_pnl']
-        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+        pnl_str  = _fmt_pnl(today["total_pnl"])
+        mins_int = int(float(mins_news or 999))
+        news_str = f"{mins_int} min" if mins_int < 999 else "clear"
 
         lines = [
-            f"[{now_utc}] {state}",
-            f"Balance: ${account['balance']:.2f}  |  DD: {account['drawdown_pct']:.1f}%",
+            f"⚡ *HONORED*  ·  {now_utc}",
+            f"{icon} {state}",
+            "",
+            f"💰  ${account['balance']:,.2f}   DD {account['drawdown_pct']:.1f}%",
             gold_line,
-            f"Session: {session}  |  Regime: {regime or 'detecting...'}  |  H4: {h4_bias or '—'}",
-            f"Today: {today['trades']} trades  {today['wins']}W {today['losses']}L  P&L: {pnl_str}",
-            f"Consecutive losses: {consec}  |  Open positions: {account['open_positions']}",
-            sig_line,
-            f"Last decision: {last_dec or '—'}",
-            f"News in: {float(mins_news or 999):.0f} min",
-            ot_block,
+            "",
+            f"🕐  {_fmt_session(session)}",
+            f"📊  {_fmt_regime(regime)}   ·   H4 {_fmt_h4(h4_bias)}",
+            "",
+            f"📅  Today    {today['trades']} trades  ·  {today['wins']}W {today['losses']}L  ·  {pnl_str}",
+            f"🔴  Streak   {consec} losses  ·  {account['open_positions']} open",
+            "",
+            f"📡  Signal   {sig_line}",
+            f"✅  Decision {last_dec or '—'}",
+            f"📰  News     {news_str}",
+            "",
+            trades_block,
         ]
 
         print("\n".join(lines))
