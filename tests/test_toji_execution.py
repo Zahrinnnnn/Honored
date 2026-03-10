@@ -126,20 +126,20 @@ async def _make_state_db() -> StateManager:
 class TestLotCalculator:
 
     def test_basic_calculation(self):
-        # balance=$20, SL=$5, 5% risk → risk=$1.00, lot=0.20
-        assert calculate_lot(20.0, 5.0) == 0.20
+        # balance=$20, SL=$5, 20% risk → risk=$4.00, lot=0.80
+        assert calculate_lot(20.0, 5.0) == 0.80
 
     def test_growth_scaling(self):
-        # balance=$40, SL=$5, 5% risk → risk=$2.00, lot=0.40
-        assert calculate_lot(40.0, 5.0) == 0.40
+        # balance=$40, SL=$5, 20% risk → risk=$8.00, lot=1.60
+        assert calculate_lot(40.0, 5.0) == 1.60
 
     def test_larger_sl_reduces_lot(self):
-        # balance=$20, SL=$8, 5% risk → risk=$1.00, lot=0.12
-        assert calculate_lot(20.0, 8.0) == 0.12
+        # balance=$20, SL=$8, 20% risk → risk=$4.00, lot=0.50
+        assert calculate_lot(20.0, 8.0) == 0.50
 
     def test_model_b_sl_min(self):
-        # balance=$20, SL=$3, 5% risk → risk=$1.00, lot=0.33
-        assert calculate_lot(20.0, 3.0) == 0.33
+        # balance=$20, SL=$3, 20% risk → risk=$4.00, lot=1.33
+        assert calculate_lot(20.0, 3.0) == 1.33
 
     def test_minimum_lot_floor(self):
         # Very large SL → lot would be tiny; floor at 0.01
@@ -159,12 +159,12 @@ class TestLotCalculator:
             calculate_lot(20.0, -5.0)
 
     def test_anti_martingale_one_loss(self):
-        # 1 consecutive loss → lot halved: 0.20 / 2 = 0.10
-        assert calculate_lot(20.0, 5.0, consecutive_losses=1) == 0.10
+        # 1 consecutive loss → lot halved: 0.80 / 2 = 0.40
+        assert calculate_lot(20.0, 5.0, consecutive_losses=1) == 0.40
 
     def test_anti_martingale_two_losses(self):
-        # 2 consecutive losses → lot quartered: 0.20 / 4 = 0.05
-        assert calculate_lot(20.0, 5.0, consecutive_losses=2) == 0.05
+        # 2 consecutive losses → lot quartered: 0.80 / 4 = 0.20
+        assert calculate_lot(20.0, 5.0, consecutive_losses=2) == 0.20
 
     def test_anti_martingale_floor(self):
         # Many losses → still floors at 0.01
@@ -173,11 +173,11 @@ class TestLotCalculator:
 
     def test_anti_martingale_zero_losses(self):
         # 0 consecutive losses → full lot (unchanged)
-        assert calculate_lot(20.0, 5.0, consecutive_losses=0) == 0.20
+        assert calculate_lot(20.0, 5.0, consecutive_losses=0) == 0.80
 
     def test_calculate_risk_amount(self):
-        assert calculate_risk_amount(20.0) == 1.0
-        assert calculate_risk_amount(40.0) == 2.0
+        assert calculate_risk_amount(20.0) == 4.0
+        assert calculate_risk_amount(40.0) == 8.0
         assert calculate_risk_amount(100.0, 0.10) == 10.0
 
 
@@ -813,8 +813,8 @@ class TestIntegration:
 
         trade, account, losses = run(_run())
         assert trade["result"]  == "WIN"
-        assert trade["pnl"]     == pytest.approx(3.0, abs=0.01)   # 0.20 × 15 = 3.00
-        assert account["balance"] == pytest.approx(23.0, abs=0.01)
+        assert trade["pnl"]     == pytest.approx(12.0, abs=0.01)   # 0.80 × 15 = 12.00
+        assert account["balance"] == pytest.approx(32.0, abs=0.01)
         assert losses == 0
 
     def test_full_loss_cycle(self):
@@ -841,7 +841,7 @@ class TestIntegration:
             return account["balance"], losses
 
         balance, losses = run(_run())
-        assert balance == pytest.approx(19.0, abs=0.01)   # 20 - 1.00 loss (5% risk)
+        assert balance == pytest.approx(16.0, abs=0.01)   # 20 - 4.00 loss (20% risk)
         assert losses  == 1
 
     def test_consecutive_loss_tracking(self):

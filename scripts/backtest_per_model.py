@@ -50,6 +50,8 @@ from core.constants import (
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
     REGIME_H1_BARS_NEEDED,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
+    RR_RATIO,
+    ACCOUNT_TYPE,
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -74,7 +76,7 @@ _BLACKOUT_END   = time(7,  0)
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
     MODEL_A: {"LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"},
-    MODEL_B: {"NY_OVERLAP"},
+    # MODEL_B: {"NY_OVERLAP", "NY_CLOSE"}, # Disabled
     MODEL_C: {"LONDON_BREAKOUT"},
 }
 _SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 8, MODEL_C: 1}
@@ -190,6 +192,11 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime, h4_bias,
     if dd_pct >= 50.0:
         return False, "drawdown>=50"
 
+    # Safety: Prevent risk stacking > 100% of balance (backtest only safety)
+    current_risk_exposure = sum(t["lot_size"] * t["sl_distance"] for t in state["open_trades"])
+    if current_risk_exposure > state["balance"] * 0.80:
+        return False, "max_exposure_reached"
+
     direction = signal.get("direction", "")
 
     # Regime + bias directional gate
@@ -229,8 +236,10 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime, h4_bias,
 # ─── Trade lifecycle ─────────────────────────────────────────────────────────
 
 def _open_trade(signal, bar, state, slippage: float = 0.0):
-    sl_distance = float(signal["sl_distance"])
-    lot = calculate_lot(state["balance"], sl_distance, consecutive_losses=state["consecutive_losses"])
+    sl_distance_points = float(signal["sl_distance"])
+    # The lot calculator expects sl_distance in USD for 1 lot.
+    sl_distance_usd_per_lot = sl_distance_points * XAUUSD_POINT_VALUE
+    lot = calculate_lot(state["balance"], sl_distance_usd_per_lot, consecutive_losses=state["consecutive_losses"])
     entry = float(signal["entry_price"])
 
     # Apply slippage: BUY fills higher, SELL fills lower (adverse)
@@ -247,9 +256,9 @@ def _open_trade(signal, bar, state, slippage: float = 0.0):
         "entry_price":    entry,
         "sl_price":       float(signal["sl_price"]),
         "tp_price":       float(signal["tp_price"]),
-        "sl_distance":    sl_distance,
+        "sl_distance":    sl_distance_points,
         "lot_size":       lot,
-        "atr_at_entry":    float(signal.get("atr_at_entry", sl_distance)),
+        "atr_at_entry":    float(signal.get("atr_at_entry", sl_distance_points)),
         "half_life_bars":  float(signal.get("half_life_bars", 0.0)),
         "session":         signal.get("session", ""),
         "regime":          signal.get("regime", ""),
@@ -278,7 +287,9 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
     if balance_after > state["peak_balance"]:
         state["peak_balance"] = balance_after
 
-    dd_pct = (state["peak_balance"] - balance_after) / max(state["peak_balance"], 1e-9) * 100
+    # Clamp DD at 100% (cannot lose more than 100% of equity effectively)
+    dd_balance = max(0.0, balance_after)
+    dd_pct = (state["peak_balance"] - dd_balance) / max(state["peak_balance"], 1e-9) * 100
     duration_mins = (bar.name - trade["open_time"]).total_seconds() / 60.0
 
     # BREAKEVEN counts as WIN for loss streak
@@ -407,7 +418,7 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, h4_bias,
 
     # Model B: TIGHT_RANGE (can fire alongside Model A if different regime,
     # but in practice regimes are mutually exclusive per bar)
-    if MODEL_B in models_to_run and not is_breakout and session in _MODEL_SESSIONS[MODEL_B]:
+    if MODEL_B in models_to_run and not is_breakout and MODEL_B in _MODEL_SESSIONS and session in _MODEL_SESSIONS[MODEL_B]:
         if regime == REGIME_TIGHT_RANGE:
             sig = _model_b(df_m5_win, session, regime)
             if sig:
@@ -419,7 +430,7 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, h4_bias,
 # ─── Core backtest engine ────────────────────────────────────────────────────
 
 def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
-                 total_bars: int, models_to_run=None) -> dict:
+                 start_bar: int, end_bar: int, models_to_run=None) -> dict:
     """
     Run backtest with specified models sharing one account.
 
@@ -427,7 +438,7 @@ def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
         models_to_run: set of model names, or None for all 3.
     """
     if models_to_run is None:
-        models_to_run = {MODEL_A, MODEL_B, MODEL_C}
+        models_to_run = {MODEL_A, MODEL_C}
 
     # Precompute ATR percentile for dynamic spread/slippage
     atr_pctile = _precompute_atr_pctile(df_m5_ind)
@@ -450,7 +461,7 @@ def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
     exit_reason_tally = defaultdict(int)
     signals_generated = 0
 
-    for i in range(_WARMUP_M5, total_bars):
+    for i in range(start_bar, end_bar):
         bar = df_m5_ind.iloc[i]
         dt  = df_m5_ind.index[i]
         today = dt.date()
@@ -589,6 +600,23 @@ def _print_summary(res: dict, start_bal: float, trading_days: int):
         mperday = len(grp) / max(trading_days, 1)
         print(f"    {model:<18}  {len(grp):>4} trades  {mwr:.0%} WR  ${mpnl:+.2f}  ({mperday:.1f}/day)")
 
+    # Deeper model analysis
+    print()
+    print("  By model (detailed):")
+    for model, grp in df.groupby("model"):
+        print(f"    - {model}:")
+        wins_df = grp[grp["result"].isin(["WIN", "BREAKEVEN"])]
+        loss_df = grp[~grp["result"].isin(["WIN", "BREAKEVEN"])]
+        avg_win_pnl = wins_df["pnl"].mean() if not wins_df.empty else 0.0
+        avg_loss_pnl = loss_df["pnl"].mean() if not loss_df.empty else 0.0
+        print(f"      Avg Win P&L : ${avg_win_pnl:+.4f}  ({len(wins_df)} trades)")
+        print(f"      Avg Loss P&L: ${avg_loss_pnl:+.4f}  ({len(loss_df)} trades)")
+        realized_rr = abs(avg_win_pnl / avg_loss_pnl) if avg_loss_pnl != 0 else 0.0
+        print(f"      Realized RR : {realized_rr:.2f} (Target: {RR_RATIO})")
+        print(f"      Exit reasons:")
+        for reason, count in grp["exit_reason"].value_counts().items():
+            print(f"        {reason:<15} {count:>5}")
+
     # By direction
     print()
     print("  By direction:")
@@ -631,6 +659,9 @@ def _print_summary(res: dict, start_bal: float, trading_days: int):
 
     print("=" * W)
 
+    # Return the DataFrame for further processing if needed
+    return df
+
 
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
@@ -666,6 +697,8 @@ def main():
     p.add_argument("--model",   choices=["A", "B", "C", "combined"],
                    default="combined",
                    help="Which model to test (default: combined)")
+    p.add_argument("--days",    type=int, help="Run backtest for the last N days only.")
+    p.add_argument("--save-csv", help="Save detailed trade log to a CSV file for analysis.")
     a = p.parse_args()
 
     # Load data
@@ -686,25 +719,37 @@ def main():
     print("Done.\n")
 
     asian_ranges = _precompute_asian_ranges(df_m5)
-    trading_days = _count_trading_days(df_m5)
+
+    # Determine start bar
+    start_bar = _WARMUP_M5
+    if a.days:
+        cutoff = df_m5.index[-1] - timedelta(days=a.days)
+        start_bar = max(_WARMUP_M5, df_m5.index.searchsorted(cutoff))
+        print(f"Backtesting last {a.days} days (starting from bar {start_bar} / {total_bars})")
+
+    trading_days = _count_trading_days(df_m5.iloc[start_bar:])
 
     model_map = {
         "A": {MODEL_A},
         "B": {MODEL_B},
         "C": {MODEL_C},
-        "combined": {MODEL_A, MODEL_B, MODEL_C},
+        "combined": {MODEL_A, MODEL_C},
     }
-
     models = model_map[a.model]
     label = "COMBINED" if a.model == "combined" else f"Model {a.model}"
 
     print(f"\n{'─' * 50}")
     print(f"  Running backtest: {label}")
     print(f"{'─' * 50}")
+    print(f"  Account Type   : {ACCOUNT_TYPE} (Point Value: {XAUUSD_POINT_VALUE})")
 
     res = run_backtest(df_m5_ind, asian_ranges, regime_map, a.balance,
-                       total_bars, models_to_run=models)
-    _print_summary(res, a.balance, trading_days)
+                       start_bar, total_bars, models_to_run=models)
+    df_results = _print_summary(res, a.balance, trading_days)
+
+    if a.save_csv and df_results is not None and not df_results.empty:
+        df_results.to_csv(a.save_csv)
+        print(f"\nTrade log saved to: {a.save_csv}")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ ACCOUNT_TYPE       = os.getenv("ACCOUNT_TYPE", "CENTS").upper()
 XAUUSD_POINT_VALUE = 100 if ACCOUNT_TYPE == "STANDARD" else 1
 
 # Risk parameters
-RISK_PER_TRADE_PCT       = 0.05
+RISK_PER_TRADE_PCT       = 0.20
 MAX_DRAWDOWN_PCT         = 0.50
 MAX_CONSECUTIVE_LOSSES   = 3
 NEWS_BLACKOUT_MINUTES    = 30
@@ -74,8 +74,8 @@ OU_LOOKBACK               = 80    # bars for OU window (reduced from 100)
 OU_LOOKBACK_SHORT         = 40    # short detrend window (EMA21 residuals)
 OU_TIME_KILL_HALF_LIFE_MULT = 2   # close after 2 × half_life_bars M5 bars
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
-OU_SL_MIN                 = 6.0   # $6 minimum SL
-OU_SL_MAX                 = 12.0  # $12 maximum SL
+OU_SL_MIN                 = 6.0   # $6 minimum SL on a Cents account
+OU_SL_MAX                 = 12.0  # $12 maximum SL on a Cents account
 ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance (relaxed from 0.05)
 M5_MAX_TRADES_PER_SESSION = 8     # Model A session limit
 M1_MAX_TRADES_PER_SESSION = 8     # Model B session limit
@@ -107,7 +107,7 @@ MODEL_SESSION_LIMITS = {
 
 MODEL_SESSIONS = {
     MODEL_A: ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"],
-    MODEL_B: ["NY_OVERLAP"],
+    # MODEL_B: ["NY_OVERLAP"], # Disabled: Negative expectancy, high friction cost
     MODEL_C: ["LONDON_BREAKOUT"],
 }
 
