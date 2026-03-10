@@ -41,7 +41,7 @@ class MetaApiClient:
                 account    = await self._api.metatrader_account_api.get_account(account_id)
                 connection = account.get_rpc_connection()
                 await connection.connect()
-                await connection.wait_synchronized()
+                await connection.wait_synchronized(300)  # 5 min timeout (SDK v29 takes int, not dict)
                 self._connection = connection
                 self._account    = account
                 logger.info("MetaApi connected and synchronized")
