@@ -31,6 +31,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from core.constants import RISK_PER_TRADE_PCT, XAUUSD_POINT_VALUE
 
 BUST_THRESHOLD = 0.50  # Bust if balance drops below $0.50

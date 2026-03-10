@@ -67,8 +67,8 @@ USER_WHATSAPP_NUMBER=+60169464542
 # Trading mode — KEEP TRUE until you manually verify paper trades work
 PAPER_MODE=true
 
-# Account type — HFM Cents account = CENTS (MetaAPI reports balance in USD)
-ACCOUNT_TYPE=CENTS
+# Account type — Standard MT5 demo account = STANDARD (1 lot = $100 per $1 gold move)
+ACCOUNT_TYPE=STANDARD
 
 # Absolute DB paths (required on VPS)
 HONORED_DB_PATH=/opt/honored/honored.db
@@ -162,9 +162,9 @@ cp "$PROJECT_DIR/deploy/supervisord.conf" /etc/supervisor/conf.d/honored.conf
 supervisorctl reread
 supervisorctl update
 
-# Initialize paper DB with $20 balance
-"$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/scripts/init_db.py" --balance 20.0
-echo "  Paper DB initialized with \$20."
+# Initialize paper DB with $200 balance
+"$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/scripts/init_db.py" --balance 200.0
+echo "  Paper DB initialized with \$200."
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 echo ""
