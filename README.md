@@ -62,9 +62,9 @@ Structural break:      H1 candle > 3×ATR14 → 4h cooldown
 lot = round((balance × 5%) / sl_distance, 2)
 # After each consecutive loss: lot / 2^consecutive_losses
 # Floor at 0.01 lot minimum, resets on win
-# balance=$200, SL=$8  → lot=1.25
-# balance=$200, SL=$8, 1 loss → lot=0.63
-# balance=$200, SL=$8, 2 losses → lot=0.31
+# balance=$20, SL=$8  → lot=0.13
+# balance=$20, SL=$8, 1 loss → lot=0.06
+# balance=$20, SL=$8, 2 losses → lot=0.03
 ```
 
 ---
