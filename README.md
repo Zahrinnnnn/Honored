@@ -260,7 +260,7 @@ See `deploy/setup.sh` for the full automated provisioning script.
 ## Current Deployment
 
 **VPS:** Hetzner CX23 — Ubuntu 22.04, Helsinki
-**Status:** ✅ Running (paper mode — `PAPER_MODE=true`); live execution verified via `test_live_execution.py`
+**Status:** ✅ Live (`PAPER_MODE=false`) — real orders on HFM demo MT5
 **Starting balance:** $200 USD (HFM demo, STANDARD account)
 **DB:** `/opt/honored/honored.db`
 **Agents:** NANAMI / GETO / TOJI / MAHORAGA under supervisord; GOJO under `openclaw-gateway.service`
