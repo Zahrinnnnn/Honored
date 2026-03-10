@@ -74,7 +74,10 @@ _POLL_INTERVAL = 5   # seconds between signal checks
 async def run():
     logger.info("TOJI starting up — executor online (paper=%s)", PAPER_MODE)
 
-    connection = await _get_connection()
+    # Connection is lazy: TOJI does NOT connect MetaApi at startup.
+    # NANAMI holds the persistent subscription; TOJI connects only when placing a live order.
+    # Trade monitoring reads price from SQLite session_info (written by NANAMI every 60s).
+    connection = None
 
     last_monitor = 0.0
 
@@ -147,8 +150,13 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
     )
 
     # ── 3. Place order ──────────────────────────────────────────────────────
+    # In live mode: connect to MetaApi now (lazily, after NANAMI is already subscribed).
+    live_connection = connection
+    if not PAPER_MODE and live_connection is None:
+        live_connection = await _get_connection()
+
     try:
-        order_result = await place_order(signal, lot_size, connection)
+        order_result = await place_order(signal, lot_size, live_connection)
     except Exception as exc:
         logger.error("Order placement failed: %s — signal dropped", exc)
         await state.set_trading_state("last_risk_decision", "ERROR")
@@ -194,17 +202,22 @@ async def _poll_positions(state: StateManager, connection):
     if not open_trades:
         return
 
-    if connection is None:
-        logger.debug("No MetaApi connection — skipping trade monitor cycle")
-        return
+    # Prefer price from SQLite session_info (NANAMI writes bid/ask every 60s).
+    # This avoids a second concurrent MetaApi subscription competing with NANAMI.
+    bid = float(await state.get_session_info("current_bid") or 0)
+    ask = float(await state.get_session_info("current_ask") or 0)
 
-    price = await get_current_price(connection)
-    if not price:
-        logger.warning("Could not fetch price — skipping trade monitor cycle")
-        return
-
-    bid = price["bid"]
-    ask = price["ask"]
+    if bid <= 0 or ask <= 0:
+        # Fallback to MetaApi if NANAMI hasn't written price yet
+        if connection is None:
+            logger.debug("No price available — skipping trade monitor cycle")
+            return
+        price = await get_current_price(connection)
+        if not price:
+            logger.warning("Could not fetch price — skipping trade monitor cycle")
+            return
+        bid = price["bid"]
+        ask = price["ask"]
     now = datetime.now(timezone.utc)
 
     for trade in open_trades:
