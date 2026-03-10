@@ -62,9 +62,9 @@ Structural break:      H1 candle > 3×ATR14 → 4h cooldown
 lot = round((balance × 5%) / sl_distance, 2)
 # After each consecutive loss: lot / 2^consecutive_losses
 # Floor at 0.01 lot minimum, resets on win
-# balance=$20, SL=$8  → lot=0.13
-# balance=$20, SL=$8, 1 loss → lot=0.06
-# balance=$20, SL=$8, 2 losses → lot=0.03
+# balance=$200, SL=$8  → lot=1.25
+# balance=$200, SL=$8, 1 loss → lot=0.63
+# balance=$200, SL=$8, 2 losses → lot=0.31
 ```
 
 ---
@@ -116,6 +116,8 @@ WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO
 
 GOJO responds in JARVIS style — confident, dry wit, never robotic.
 
+> **Anti-hallucination:** Status responses use `get_status_text.py` which outputs pre-formatted plain text. GOJO echoes it verbatim — no LLM reformatting, no stale data possible. If GOJO starts returning wrong data, run `bash scripts/reset_gojo_session.sh` to clear the poisoned WhatsApp session history.
+
 > **Note:** GOJO scripts use a standalone `_load_honored_env()` parser (no python-dotenv dependency) and check both `HONORED_DB` and `HONORED_DB_PATH` env vars. The `HONORED_DB` path **must be absolute** — relative paths resolve to `~/.openclaw/workspace/` and will read the wrong DB.
 
 ---
@@ -160,10 +162,13 @@ honored/
 │   └── skills/honored-trading/
 │       ├── SKILL.md          # Skill definition for OpenClaw
 │       └── scripts/          # Python tools GOJO calls via exec
+│           └── get_status_text.py  # Pre-formatted WhatsApp status (GOJO echoes verbatim)
 │
 ├── scripts/
-│   ├── init_db.py            # Initialize DB with starting balance
-│   └── backtest_per_model.py # Combined backtester with realistic friction
+│   ├── init_db.py                # Initialize DB with starting balance
+│   ├── backtest_per_model.py     # Combined backtester with realistic friction
+│   ├── reset_gojo_session.sh     # Clear GOJO's poisoned WhatsApp session history
+│   └── test_live_execution.py    # Manual live trade execution test (place + close)
 │
 ├── deploy/
 │   ├── setup.sh              # One-shot VPS provisioning script
@@ -179,7 +184,7 @@ honored/
 ### Prerequisites
 - Python 3.11+
 - Node.js 22+
-- MetaApi account + HFM MT5 Cents account
+- MetaApi account + HFM MT5 account (demo or live)
 - DeepSeek API key (deepseek.com)
 - Finnhub API key (free at finnhub.io)
 
@@ -255,8 +260,8 @@ See `deploy/setup.sh` for the full automated provisioning script.
 ## Current Deployment
 
 **VPS:** Hetzner CX23 — Ubuntu 22.04, Helsinki
-**Status:** ✅ Live (paper mode — `PAPER_MODE=true`)
-**Starting balance:** $200 USD (STANDARD account)
+**Status:** ✅ Running (paper mode — `PAPER_MODE=true`); live execution verified via `test_live_execution.py`
+**Starting balance:** $200 USD (HFM demo, STANDARD account)
 **DB:** `/opt/honored/honored.db`
 **Agents:** NANAMI / GETO / TOJI / MAHORAGA under supervisord; GOJO under `openclaw-gateway.service`
 

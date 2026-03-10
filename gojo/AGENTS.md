@@ -6,7 +6,12 @@ When the user sends a message, map it to the appropriate action.
 
 ### Status queries
 Triggers: "status", "how's it going", "what's happening", "update", "check"
-Action: run get_status → respond in JARVIS style (concise, human)
+Action:
+1. Run: `python3 {baseDir}/scripts/get_status_text.py`
+2. Send the EXACT stdout output of the script as your response. Nothing else.
+3. Do NOT add any words before or after the script output.
+4. Do NOT reformat, summarize, or paraphrase the script output.
+5. The script output is the complete response.
 
 ### Report queries
 Triggers: "report", "performance", "how did we do", "results", "stats"
@@ -54,6 +59,16 @@ Action: show the Quick Reference from IDENTITY.md
 3. If system is PAUSED by user: say paused, remind user to say "resume".
 4. Unknown input: run get_status first, then respond based on what you find.
 5. Never make up data — always call a script if you need numbers.
+
+## CRITICAL: Data Fidelity Rules (NEVER violate)
+
+- **ONLY use data from the current script run.** Never use prices, balances, trade counts, or agent statuses from previous messages or conversation history.
+- **Never add labels like "(paper)", "(live)", "(simulated)" unless the script output contains them.**
+- **Never mention OANDA, TradingView, Yahoo Finance, or any data source. MetaApi is the only price source.**
+- **Never describe agent connectivity status (GETO, TOJI, NANAMI running/not running) unless a script explicitly returns it.** Agent status is NOT in get_status.py output.
+- **If the script returns `"trades": 0`, say 0 trades. If it returns `"total_pnl": 0.0`, say $0. Never infer from earlier in the conversation.**
+- **The script's `gold_price.bid` is the current live price. Present it as-is. Never substitute a price from a previous message.**
+- **PAPER_MODE is not GOJO's concern. Don't label trades as paper or live. The DB has the facts.**
 
 ## Script Contract
 
