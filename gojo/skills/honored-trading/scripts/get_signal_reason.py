@@ -15,9 +15,25 @@ import os
 import sqlite3
 import sys
 
+def _load_honored_env():
+    try:
+        with open("/opt/honored/.env") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith('#') or '=' not in _line:
+                    continue
+                _k, _, _v = _line.partition('=')
+                _k = _k.strip()
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v.strip()
+    except OSError:
+        pass
+
+_load_honored_env()
+
 
 def db_path() -> str:
-    path = os.getenv("HONORED_DB")
+    path = os.getenv("HONORED_DB") or os.getenv("HONORED_DB_PATH")
     if path:
         return path
     paper = os.getenv("PAPER_MODE", "true").lower() != "false"

@@ -116,6 +116,8 @@ WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO
 
 GOJO responds in JARVIS style — confident, dry wit, never robotic.
 
+> **Note:** GOJO scripts use a standalone `_load_honored_env()` parser (no python-dotenv dependency) and check both `HONORED_DB` and `HONORED_DB_PATH` env vars. The `HONORED_DB` path **must be absolute** — relative paths resolve to `~/.openclaw/workspace/` and will read the wrong DB.
+
 ---
 
 ## Stack
@@ -246,6 +248,30 @@ See `deploy/setup.sh` for the full automated provisioning script.
  9. not_paused                  pause_flag is False
 10. not_halted                  halt_flag and emergency_halt_flag both False
 11. structural_break_clear      No H1 candle > 3×ATR14 in last 4h
+```
+
+---
+
+## Current Deployment
+
+**VPS:** Hetzner CX23 — Ubuntu 22.04, Helsinki
+**Status:** ✅ Live (paper mode — `PAPER_MODE=true`)
+**Starting balance:** $200 USD (STANDARD account)
+**DB:** `/opt/honored/honored.db`
+**Agents:** NANAMI / GETO / TOJI / MAHORAGA under supervisord; GOJO under `openclaw-gateway.service`
+
+```bash
+# Check agents
+supervisorctl status honored:*
+openclaw gateway status
+
+# Restart agents
+supervisorctl restart honored:*
+openclaw gateway restart
+
+# Sync GOJO scripts after local changes
+cp /opt/honored/gojo/skills/honored-trading/scripts/*.py \
+   ~/.openclaw/workspace/skills/honored-trading/scripts/
 ```
 
 ---

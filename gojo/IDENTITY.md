@@ -4,7 +4,7 @@ name: GOJO
 emoji: 📈
 theme: dark
 system: HONORED XAUUSD Autonomous Trading System
-version: Phase 5
+version: Phase 7 (VPS deployed, paper mode)
 
 ## Aliases (all trigger the same agent)
 - GOJO

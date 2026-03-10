@@ -1026,6 +1026,34 @@ HONORED_DB_PATH=/opt/honored/honored.db
 - WhatsApp session persists (no re-scan needed)
 - MetaApi reconnects via retry logic in metaapi_client.py
 
+### GOJO Script Critical Lessons (learned in production)
+
+1. **python-dotenv is not in system python3** — OpenClaw runs scripts with system python3 (`/usr/bin/python3`), not the project venv. `from dotenv import load_dotenv` silently fails. All GOJO scripts use a standalone `_load_honored_env()` function that reads `/opt/honored/.env` directly via stdlib `open()`.
+
+2. **HONORED_DB must be an absolute path** — Relative paths in `openclaw.json` env section resolve to `~/.openclaw/workspace/`, creating the wrong DB. Always set `"HONORED_DB": "/opt/honored/honored.db"` (absolute).
+
+3. **`_load_honored_env()` does not override existing env vars** — It skips any key already in `os.environ`. So if openclaw passes `HONORED_DB` via its env section, the .env file cannot override it. Get the path right in `openclaw.json` first.
+
+4. **Workspace sync is manual** — After any local script change, copy to VPS and sync:
+   ```bash
+   # From local machine:
+   scp gojo/skills/honored-trading/scripts/*.py root@<VPS>:/opt/honored/gojo/skills/honored-trading/scripts/
+   # On VPS:
+   cp /opt/honored/gojo/skills/honored-trading/scripts/*.py ~/.openclaw/workspace/skills/honored-trading/scripts/
+   openclaw gateway restart
+   ```
+
+5. **GOJO has tools:full** — DeepSeek can run arbitrary shell commands on the VPS. This is required for `set_flag.py` etc. but means GOJO can explore and self-repair during debugging.
+
+6. **Validate sync** — `grep -l "_load_honored_env" ~/.openclaw/workspace/skills/honored-trading/scripts/*.py` — should list all 5 scripts.
+
+### Current Deployment State (as of March 2026)
+- **VPS:** Hetzner CX23, Helsinki, 89.167.122.162
+- **Mode:** Paper (`PAPER_MODE=true`)
+- **Starting balance:** $200 USD (STANDARD account)
+- **DB:** `/opt/honored/honored.db`
+- **Status:** All agents running, GOJO on WhatsApp
+
 ---
 
 ## Development Guidelines
