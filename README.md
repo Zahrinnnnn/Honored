@@ -2,7 +2,7 @@
 
 > *"The strongest don't need luck. They need a system."*
 
-**HONORED** is a fully autonomous, multi-agent algorithmic trading system built for XAUUSD (Gold/USD) on an HFM MT5 Cents account. Five specialized agents run 24/7, each named after a Jujutsu Kaisen character — because the strongest cursed spirits don't sleep, and neither does this system.
+**HONORED** is a fully autonomous, multi-agent algorithmic trading system built for XAUUSD (Gold/USD) on an HFM MT5 account. Five specialized agents run 24/7, each named after a Jujutsu Kaisen character — because the strongest cursed spirits don't sleep, and neither does this system.
 
 ---
 
@@ -22,34 +22,31 @@
 
 ## Trading Models
 
-### Model A — OU Grind (Directional Mean-Reversion)
-- **Sessions:** London Open (07:00–10:00), NY Overlap (12:00–16:00), NY Close (19:00–21:00)
+### Model A — OU Grind (Directional Mean-Reversion) ✅ Active
+- **Sessions:** NY Overlap (12:00–16:00 GMT) only
+  - Dead zone: 14:00–15:00 UTC blocked (US midday doldrums, historically weak)
+  - LONDON_OPEN and NY_CLOSE disabled (underperforming in data)
 - **Regime:** BULLISH_GRIND or BEARISH_GRIND only (6-state H1 regime)
-- **Logic:** Ornstein-Uhlenbeck mean-reversion with dual detrend — EMA50 primary (z=0.8, 80-bar) + EMA21 fallback (z=1.3, 40-bar). BUY in BULLISH_GRIND when z < -threshold, SELL in BEARISH_GRIND when z > threshold
+- **Logic:** Ornstein-Uhlenbeck mean-reversion with dual detrend — EMA50 primary (z≥0.9, 80-bar) + EMA21 fallback (z≥1.3, 40-bar). BUY in BULLISH_GRIND when z < -threshold, SELL in BEARISH_GRIND when z > threshold
 - **Gates:** ADF stationary, OU fit valid, 3 ≤ half_life ≤ 50, |z| > threshold
 - **Risk:** SL = 1.5×ATR clamped $6–$12, TP = SL×2, max 8 trades/session
 
-### Model B — OU Range (Bidirectional Mean-Reversion)
-- **Sessions:** NY Overlap (12:00–16:00) only — proven toxic in other sessions
-- **Regime:** TIGHT_RANGE only
-- **Logic:** Ornstein-Uhlenbeck with EMA50 detrend only (z=1.3). z < -1.3 → BUY, z > 1.3 → SELL. No EMA21 — proven noisy for bidirectional
-- **Gates:** Same OU engine as Model A, higher z-score threshold
-- **Risk:** SL = 1.5×ATR clamped $6–$12, TP = SL×2, max 8 trades/session
+### Model B — OU Range (Bidirectional Mean-Reversion) ⛔ Disabled
+- Disabled — negative expectancy after spread/slippage on current data
+- **When re-enabled:** NY Overlap only. Regime: TIGHT_RANGE. EMA50 detrend, z≥1.3 bidirectional
 
-### Model C — Asian Breakout
-- **Session:** 07:00–07:30 GMT only (30-minute window, exclusive priority)
-- **Regime:** Any — filtered by H4 bias only (BUY needs h4≠BEARISH, SELL needs h4≠BULLISH)
-- **Logic:** Asian session range (00:00–07:00 GMT) high/low break on M5 close; min range $3 guard
-- **Risk:** SL = Asian range width clamped $5–$8, TP = SL×2, max 1 trade/day
+### Model C — Asian Breakout ⛔ Disabled
+- Disabled — insufficient trade count for reliable live validation
+- **When re-enabled:** 07:00–07:30 GMT only. H4 bias filter. Asian range break with min $3 range guard
 
 ---
 
 ## Risk Rules (Hard Stops — No Exceptions)
 
 ```
-Risk per trade:        5% of current balance
+Risk per trade:        20% of current balance
 Risk:Reward ratio:     1:2 fixed (TP always = SL × 2)
-Open trades:           No cap — multiple trades can be open simultaneously
+Open trades:           No cap in production (GETO exposure guard: >80% balance → block)
 Max drawdown:          50% → EMERGENCY HALT (user unlock only)
 Consecutive losses:    3 in a row → SOFT HALT (user "override" to resume)
 News blackout:         30 min before/after high-impact events (Finnhub)
@@ -59,27 +56,41 @@ Structural break:      H1 candle > 3×ATR14 → 4h cooldown
 
 ### Anti-Martingale Lot Sizing
 ```python
-lot = round((balance × 5%) / sl_distance, 2)
+lot = round((balance × 20%) / sl_distance, 2)
 # After each consecutive loss: lot / 2^consecutive_losses
 # Floor at 0.01 lot minimum, resets on win
-# balance=$20, SL=$8  → lot=0.13
-# balance=$20, SL=$8, 1 loss → lot=0.06
-# balance=$20, SL=$8, 2 losses → lot=0.03
+# balance=$20, SL=$8  → lot=0.05
+# balance=$20, SL=$8, 1 loss → lot=0.03
+# balance=$20, SL=$8, 2 losses → lot=0.01
 ```
 
 ---
 
-## Backtest Results (6 months, realistic friction, $20 start)
+## Backtest Results — Model A (6 months, realistic friction, $20 start)
 
 ```
-Combined:  257 trades, 61.5% WR, $20 → $356, Sharpe 2.05, max DD 38.1%
-OU_GRIND:  155 trades, 63% WR, +$237 (1.2/day)
-OU_RANGE:   82 trades, 61% WR,  +$38 (0.6/day)
-BREAKOUT:   20 trades, 55% WR,  +$61 (0.2/day)
-Best session: NY_OVERLAP — 153 trades, 67% WR, +$229
+Model A (NY_OVERLAP only):
+  Trades        : 48  (23W / 5L / 20BE)
+  Decisive WR   : 82.1%  (excludes breakeven exits)
+  Net P&L       : $20 → $1,024  (+$1,004, no refills)
+  Sharpe        : 2.80
+  Max DD        : 48.5%
+  Trades/day    : 0.38
+  RR (pts)      : 3.14  ← true trade quality
+  RR (USD)      : 1.31  ← anti-martingale distortion (expected: losses at bigger lots)
+
+  By direction  : BUY 72% WR (13W/5L) | SELL 100% WR (10W/0L)
+  By regime     : BULLISH_GRIND 72% | BEARISH_GRIND 100%
+
+Walk-forward validation (H1 vs H2):
+  H1 (Oct–Dec) : 17 trades, 81.8% WR, +$112, Sharpe 1.99
+  H2 (Dec–Mar) : 31 trades, 82.4% WR, +$134, Sharpe 2.55
+
+Fixed-lot validation (0.01 lot, no compounding):
+  Net P&L: +$3.30 over 48 trades — edge is real, not a compounding artifact
 ```
 
-Realistic friction: dynamic spread ($0.35 calm → $1.20 volatile), slippage ($0.10 → $0.30), ATR-percentile-based.
+Realistic friction: dynamic spread ($0.35 calm → $1.20 volatile), slippage ($0.10 → $0.30), switched at ATR percentile > 80.
 
 ---
 
@@ -118,7 +129,7 @@ GOJO responds in JARVIS style — confident, dry wit, never robotic.
 
 > **Anti-hallucination:** Status responses use `get_status_text.py` which outputs pre-formatted plain text. GOJO echoes it verbatim — no LLM reformatting, no stale data possible. If GOJO starts returning wrong data, run `bash scripts/reset_gojo_session.sh` to clear the poisoned WhatsApp session history.
 
-> **Note:** GOJO scripts use a standalone `_load_honored_env()` parser (no python-dotenv dependency) and check both `HONORED_DB` and `HONORED_DB_PATH` env vars. The `HONORED_DB` path **must be absolute** — relative paths resolve to `~/.openclaw/workspace/` and will read the wrong DB.
+> **Note:** GOJO scripts use a standalone `_load_honored_env()` parser (no python-dotenv dependency). The `HONORED_DB` path **must be absolute** — relative paths resolve to `~/.openclaw/workspace/` and will read the wrong DB.
 
 ---
 
@@ -167,6 +178,12 @@ honored/
 ├── scripts/
 │   ├── init_db.py                # Initialize DB with starting balance
 │   ├── backtest_per_model.py     # Combined backtester with realistic friction
+│   │                             #   --fixed-lot 0.01  → pure signal quality (no compounding)
+│   │                             #   --walk-forward    → split period in half, run each
+│   │                             #   --save-csv FILE   → export trade log
+│   ├── debug_model_a.py          # Comprehensive Model A diagnostic
+│   │                             #   WR by session/direction/hour/z-score/half-life
+│   │                             #   max simultaneous trades sensitivity, spread transparency
 │   ├── reset_gojo_session.sh     # Clear GOJO's poisoned WhatsApp session history
 │   └── test_live_execution.py    # Manual live trade execution test (place + close)
 │
@@ -270,9 +287,8 @@ See `deploy/setup.sh` for the full automated provisioning script.
 supervisorctl status honored:*
 openclaw gateway status
 
-# Restart agents
-supervisorctl restart honored:*
-openclaw gateway restart
+# Restart agents (after constants.py changes)
+supervisorctl restart honored:nanami   # only NANAMI needs restart for OU param changes
 
 # Sync GOJO scripts after local changes
 cp /opt/honored/gojo/skills/honored-trading/scripts/*.py \

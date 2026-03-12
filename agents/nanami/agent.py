@@ -41,6 +41,7 @@ from core.constants import (  # noqa: E402
     MODEL_A, MODEL_B, MODEL_C,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
+    NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     REGIME_H1_BARS_NEEDED, HTF_H4_BARS_NEEDED,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
     NO_TRADE_REGIMES,
@@ -203,7 +204,11 @@ async def _poll(state: StateManager):
         # Model A: OU in grind regimes (BULLISH_GRIND or BEARISH_GRIND)
         if regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
             if session in MODEL_SESSIONS[MODEL_A]:
-                signal = await _try_model_a(state, df_m5, session, regime)
+                utc_hour = datetime.now(timezone.utc).hour
+                if NY_OVERLAP_DEAD_HOUR_START <= utc_hour < NY_OVERLAP_DEAD_HOUR_END:
+                    logger.debug("Dead zone (%d:00 UTC) — skipping Model A signal", utc_hour)
+                else:
+                    signal = await _try_model_a(state, df_m5, session, regime)
 
         # Model B: OU in tight range
         if signal is None and regime == REGIME_TIGHT_RANGE:

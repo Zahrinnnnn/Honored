@@ -41,14 +41,14 @@ WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO (SOUL.md + tools)
 - NANAMI and TOJI are **zero-LLM** — pure Python only
 - MAHORAGA **never** auto-applies parameter changes — all require explicit user approval via WhatsApp
 - No cap on simultaneous open trades
-- Risk per trade = exactly 5% of current balance
+- Risk per trade = exactly 20% of current balance
 - RR ratio = 1:2 fixed (TP always = SL × 2)
 - Anti-martingale lot sizing: halve lot for each consecutive loss (lot / 2^losses), floor at 0.01
 
 ### Model Priority & Exclusivity
 - **07:00–07:30 GMT**: Model C (Asian Breakout) has exclusive priority — Model A **cannot** fire in this window
 - **Model A vs Model B**: Mutually exclusive by 6-state regime (A fires only in GRIND regimes, B fires only in TIGHT_RANGE)
-- **Model A sessions**: LONDON_OPEN, NY_OVERLAP, NY_CLOSE (all 3 sessions)
+- **Model A sessions**: NY_OVERLAP only (LONDON_OPEN 25% dWR + NY_CLOSE disabled)
 - **Model B sessions**: NY_OVERLAP only (proven toxic in other sessions)
 - **Concurrent trades**: No position cap — multiple trades can be open simultaneously
 - **Model C**: Regime-agnostic — filtered by H4 bias only
@@ -473,7 +473,7 @@ PHASE 8 ⬜ PENDING    Go Live
 
   [x] agents/nanami/skills/ou_grind.py  ← MODEL A (full rewrite)
         OU mean-reversion in directional GRIND regimes.
-        Dual detrend: EMA50 primary (z=0.8, 80-bar) + EMA21 fallback (z=1.3, 40-bar).
+        Dual detrend: EMA50 primary (z=0.9, 80-bar) + EMA21 fallback (z=1.3, 40-bar).
         BUY: BULLISH_GRIND + z < -threshold.
         SELL: BEARISH_GRIND + z > threshold.
         Gates: regime, ADF stationary, OU fit, 3≤half_life≤50, z>threshold.
@@ -495,7 +495,8 @@ PHASE 8 ⬜ PENDING    Go Live
         Main asyncio loop: 60s active / 300s blackout.
         Fetches H1 (200 bars) for 6-state regime + structural break check.
         Fetches H4 for Model C H4 bias. Model dispatch by regime:
-        GRIND→Model A, TIGHT_RANGE→Model B, no-trade regimes→skip.
+        GRIND→Model A (NY_OVERLAP only, dead zone 14:00-15:00 UTC blocked),
+        TIGHT_RANGE→Model B, no-trade regimes→skip.
         Updates session_info every poll. APPROVED signal guard active.
         Writes signals as JSON to trading_state.last_signal.
 
@@ -774,7 +775,7 @@ STRUCTURAL_BREAK_COOLDOWN_HOURS = 4    # hours to cool down
 
 # OU Model Parameters (Model A + B)
 OU_ZSCORE_ENTRY_THRESHOLD = 1.3    # Model B z-score (also Model A EMA21 fallback)
-OU_ZSCORE_GRIND_THRESHOLD = 0.8    # Model A EMA50 z-score (directional regime supports lower z)
+OU_ZSCORE_GRIND_THRESHOLD = 0.9    # Model A EMA50 z-score (intermediate — balances quality vs frequency)
 OU_MIN_HALF_LIFE = 3
 OU_MAX_HALF_LIFE = 50
 OU_LOOKBACK = 80                   # primary detrend window (EMA50)
@@ -802,10 +803,14 @@ MODEL_B = "OU_RANGE"
 MODEL_C = "ASIAN_BREAKOUT"
 
 MODEL_SESSIONS = {
-    MODEL_A: ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"],
+    MODEL_A: ["NY_OVERLAP"],         # LONDON_OPEN (25% dWR) + NY_CLOSE disabled
     MODEL_B: ["NY_OVERLAP"],
     MODEL_C: ["LONDON_BREAKOUT"],
 }
+
+# Dead zone — blocked inside NY_OVERLAP (US midday doldrums, historically weak)
+NY_OVERLAP_DEAD_HOUR_START = 14    # 14:00 UTC
+NY_OVERLAP_DEAD_HOUR_END   = 15    # 15:00 UTC
 ```
 
 ---
@@ -813,7 +818,7 @@ MODEL_SESSIONS = {
 ## Lot Calculation Formula
 
 ```python
-def calculate_lot(balance: float, sl_distance: float, risk_pct: float = 0.05,
+def calculate_lot(balance: float, sl_distance: float, risk_pct: float = 0.20,
                   consecutive_losses: int = 0) -> float:
     """balance is in USD. sl_distance is in USD."""
     risk_amount = balance * risk_pct

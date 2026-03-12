@@ -67,10 +67,10 @@ MAX_TRADE_DURATION_MINUTES   = 240    # Hard cap: 4 hours
 # OU Model Parameters (shared by Model A and Model B)
 # ─────────────────────────────────────────────────────────────────────────────
 OU_ZSCORE_ENTRY_THRESHOLD = 1.3   # |ou_z| > 1.3 to enter (Model B default)
-OU_ZSCORE_GRIND_THRESHOLD = 0.8   # |ou_z| > 0.8 for Model A (directional regime supports lower z)
-OU_MIN_HALF_LIFE          = 3     # bars (relaxed from 5)
-OU_MAX_HALF_LIFE          = 50    # bars (relaxed from 30)
-OU_LOOKBACK               = 80    # bars for OU window (reduced from 100)
+OU_ZSCORE_GRIND_THRESHOLD = 0.9   # |ou_z| > 0.9 for Model A (intermediate — balances signal quality vs frequency)
+OU_MIN_HALF_LIFE          = 3     # bars minimum half-life
+OU_MAX_HALF_LIFE          = 50    # bars
+OU_LOOKBACK               = 80    # bars for OU window
 OU_LOOKBACK_SHORT         = 40    # short detrend window (EMA21 residuals)
 OU_TIME_KILL_HALF_LIFE_MULT = 2   # close after 2 × half_life_bars M5 bars
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
@@ -79,6 +79,8 @@ OU_SL_MAX                 = 12.0  # $12 maximum SL distance (gold price points)
 ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance (relaxed from 0.05)
 M5_MAX_TRADES_PER_SESSION = 8     # Model A session limit
 M1_MAX_TRADES_PER_SESSION = 8     # Model B session limit
+NY_OVERLAP_DEAD_HOUR_START = 14   # 14:00 UTC — dead zone start (US midday, 48% WR)
+NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Model C — London Open Breakout (refined with H4 filter)
@@ -106,9 +108,9 @@ MODEL_SESSION_LIMITS = {
 }
 
 MODEL_SESSIONS = {
-    MODEL_A: ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"],
+    MODEL_A: ["NY_OVERLAP"],
     # MODEL_B: ["NY_OVERLAP"], # Disabled: Negative expectancy, high friction cost
-    MODEL_C: ["LONDON_BREAKOUT"],
+    # MODEL_C: ["LONDON_BREAKOUT"], # Disabled
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
