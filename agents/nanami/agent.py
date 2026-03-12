@@ -194,8 +194,8 @@ async def _poll(state: StateManager):
     signal = None
 
     if is_breakout_window:
-        # Only Model C is allowed during 07:00–07:30 (regime-agnostic)
-        signal = await _try_model_c(state, df_m5, h4_bias)
+        # Model C (ASIAN_BREAKOUT) — DISABLED: negative expectancy in backtest
+        logger.info("London Breakout window — Model C disabled, skipping")
 
     elif regime in NO_TRADE_REGIMES:
         logger.info("Regime=%s — no trading allowed", regime)
@@ -210,10 +210,10 @@ async def _poll(state: StateManager):
                 else:
                     signal = await _try_model_a(state, df_m5, session, regime)
 
-        # Model B: OU in tight range
-        if signal is None and regime == REGIME_TIGHT_RANGE:
-            if session in MODEL_SESSIONS[MODEL_B]:
-                signal = await _try_model_b(state, df_m5, session, regime)
+        # Model B (OU_RANGE) — DISABLED: negative expectancy in London Open, NY Close
+        # if signal is None and regime == REGIME_TIGHT_RANGE:
+        #     if session in MODEL_SESSIONS[MODEL_B]:
+        #         signal = await _try_model_b(state, df_m5, session, regime)
 
     # ── 11. Persist signal ───────────────────────────────────────────────
     if signal:
