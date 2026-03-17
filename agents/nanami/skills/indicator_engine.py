@@ -50,7 +50,7 @@ from core.constants import MODEL_A_ZSCORE_LOOKBACK
 
 
 _INDICATOR_COLS = (
-    "ema9", "ema21", "ema50", "ema21_slope",
+    "ema9", "ema21", "ema34", "ema50", "ema21_slope",
     "rsi14", "stoch_rsi_k", "stoch_rsi_d",
     "atr14", "atr_pct",
     "adx14",
@@ -90,6 +90,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ── Exponential Moving Averages ──────────────────────────────────────────
     df["ema9"]  = ta.trend.ema_indicator(close, window=9,  fillna=False)
     df["ema21"] = ta.trend.ema_indicator(close, window=21, fillna=False)
+    df["ema34"] = ta.trend.ema_indicator(close, window=34, fillna=False)
     df["ema50"] = ta.trend.ema_indicator(close, window=50, fillna=False)
 
     # EMA21 slope: change per candle over the last 5 bars

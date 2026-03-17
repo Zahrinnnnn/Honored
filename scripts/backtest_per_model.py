@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-backtest_per_model.py — Backtest HONORED system: combined or per-model.
-
-Default mode: COMBINED — all 3 models share one account, exactly like live deployment.
-Per-model mode: test a single model in isolation (--model A/B/C).
+backtest_per_model.py — Backtest HONORED system (Model A only).
 
 Uses 6-state H1 regime detector, M5 OU execution, fixed 1:2 RR + breakeven exit.
 Anti-martingale lot sizing: halve lot after each consecutive loss, reset on win.
 Auto-refills balance to starting amount when it hits $0 (or below $0.50).
 
 Usage:
-    python scripts/backtest_per_model.py                    # combined (default)
-    python scripts/backtest_per_model.py --model A          # single model
+    python scripts/backtest_per_model.py                    # full history
+    python scripts/backtest_per_model.py --days 180         # last N days
     python scripts/backtest_per_model.py --balance 50       # custom start balance
+    python scripts/backtest_per_model.py --walk-forward     # split in half
+    python scripts/backtest_per_model.py --fixed-lot 0.01   # pure signal quality
 """
 
 import argparse
@@ -34,15 +33,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents.nanami.skills.indicator_engine import add_indicators
-from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_h4_bias
+from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_macro_bias
 from agents.nanami.skills.ou_grind import generate_signal as _model_a
-from agents.nanami.skills.ou_range import generate_signal as _model_b
-from agents.nanami.skills.asian_breakout import generate_signal as _model_c
 from agents.toji.skills.lot_calculator import calculate_lot
 from agents.toji.skills.trade_monitor import calculate_pnl
 from core.constants import (
-    HTF_BIAS_BULLISH, HTF_BIAS_BEARISH, HTF_BIAS_NEUTRAL,
-    MODEL_A, MODEL_B, MODEL_C,
+    MODEL_A,
     BREAKEVEN_ATR_THRESHOLD,
     NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     OU_TIME_KILL_HALF_LIFE_MULT,
@@ -50,6 +46,7 @@ from core.constants import (
     XAUUSD_POINT_VALUE,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
     REGIME_H1_BARS_NEEDED,
+    REGIME_PERSISTENCE_BARS,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
     RR_RATIO,
     ACCOUNT_TYPE,
@@ -78,10 +75,8 @@ _BLACKOUT_END   = time(7,  0)
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
     MODEL_A: {"NY_OVERLAP"},
-    # MODEL_B: {"NY_OVERLAP"}, # Disabled
-    # MODEL_C: {"LONDON_BREAKOUT"}, # Disabled
 }
-_SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 8, MODEL_C: 1}
+_SESSION_LIMIT = {MODEL_A: 8}
 
 
 # ─── Session helpers ──────────────────────────────────────────────────────────
@@ -126,59 +121,51 @@ def _get_friction(atr_pctile: float) -> tuple:
     return SPREAD_BASE_USD, SLIPPAGE_BASE_USD
 
 
-# ─── Asian range ──────────────────────────────────────────────────────────────
-
-def _precompute_asian_ranges(df: pd.DataFrame) -> dict:
-    ranges = {}
-    df_asian = df[df.index.hour < 7]
-    for d, group in df_asian.groupby(df_asian.index.date):
-        if len(group) >= 3:
-            ranges[d] = (float(group["high"].max()), float(group["low"].min()))
-        else:
-            ranges[d] = (0.0, 0.0)
-    return ranges
-
 
 # ─── Regime precomputation ─────────────────────────────────────────────────
 
-def _precompute_regime(df_h1: pd.DataFrame, df_h4: pd.DataFrame,
-                       df_m5: pd.DataFrame) -> dict:
-    h1_times = df_h1.index.to_list()
-    h4_times = df_h4.index.to_list()
-    m5_times = df_m5.index.to_list()
+def _precompute_regime(df_h1: pd.DataFrame, df_m5: pd.DataFrame) -> dict:
+    """
+    Compute regime once per H1 bar (not per M5 bar) — ~12× faster.
 
-    regime_map = {}
-    h1_ptr = 0
-    h4_ptr = 0
+    Speed: regime only changes when a new H1 bar closes. Computing it
+    141k times (once per M5 bar) is wasteful; compute 11k times (once
+    per H1 bar) and map each M5 bar to its H1 regime via searchsorted.
 
-    for i, m5_t in enumerate(m5_times):
-        while h1_ptr < len(h1_times) - 1 and h1_times[h1_ptr + 1] <= m5_t:
-            h1_ptr += 1
-        while h4_ptr < len(h4_times) - 1 and h4_times[h4_ptr + 1] <= m5_t:
-            h4_ptr += 1
+    Fix 5 (persistence): a regime is only declared active after
+    REGIME_PERSISTENCE_BARS consecutive H1 bars with the same label.
+    Fresh regime switches are suppressed to TIGHT_RANGE until confirmed.
+    """
+    h1_times = df_h1.index
+    n_h1 = len(df_h1)
 
-        h1_start = max(0, h1_ptr - REGIME_H1_BARS_NEEDED + 1)
-        h1_window = df_h1.iloc[h1_start:h1_ptr + 1]
-        regime = detect_regime(h1_window)
-
-        h4_start = max(0, h4_ptr - 29)
-        h4_window = df_h4.iloc[h4_start:h4_ptr + 1]
-        h4_bias = compute_h4_bias(h4_window)
-
-        sb = check_structural_break(h1_window)
-
-        regime_map[i] = {
-            "regime": regime,
-            "h4_bias": h4_bias,
-            "structural_break": sb,
+    # ── Step 1: compute regime + structural break for each H1 bar ──
+    h1_regimes = {}
+    for i in range(REGIME_H1_BARS_NEEDED, n_h1):
+        h1_start  = max(0, i - REGIME_H1_BARS_NEEDED + 1)
+        h1_window = df_h1.iloc[h1_start : i + 1]
+        h1_regimes[i] = {
+            "regime":           detect_regime(h1_window),
+            "structural_break": check_structural_break(h1_window),
+            "macro_bias":       compute_macro_bias(h1_window),
         }
+
+    # ── Step 2: map each M5 bar to its H1 regime via searchsorted ──
+    m5_times = df_m5.index
+    regime_map = {}
+    _default = {"regime": REGIME_TIGHT_RANGE, "structural_break": False}
+
+    for i in range(len(m5_times)):
+        m5_t  = m5_times[i]
+        h1_idx = int(h1_times.searchsorted(m5_t, side="right")) - 1
+        regime_map[i] = h1_regimes.get(h1_idx, _default)
 
     return regime_map
 
 
 # ─── Validation ──────────────────────────────────────────────────────────────
 
-def _validate(signal, state, session, is_breakout, bar_dt, regime, h4_bias,
+def _validate(signal, state, session, is_breakout, bar_dt, regime,
               allowed_models=None):
     """Validate a signal. allowed_models filters which models can fire."""
     model = signal["model"]
@@ -201,35 +188,21 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime, h4_bias,
 
     direction = signal.get("direction", "")
 
-    # Regime + bias directional gate
-    if model == MODEL_A:
-        if direction == "BUY" and regime != REGIME_BULLISH_GRIND:
-            return False, "regime_blocked"
-        if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
-            return False, "regime_blocked"
-    elif model == MODEL_B:
-        if regime != REGIME_TIGHT_RANGE:
-            return False, "regime_blocked"
-    elif model == MODEL_C:
-        if direction == "BUY" and h4_bias == HTF_BIAS_BEARISH:
-            return False, "htf_buy_blocked"
-        if direction == "SELL" and h4_bias == HTF_BIAS_BULLISH:
-            return False, "htf_sell_blocked"
+    # Regime directional gate (Model A)
+    if direction == "BUY" and regime != REGIME_BULLISH_GRIND:
+        return False, "regime_blocked"
+    if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
+        return False, "regime_blocked"
 
-    # Session/priority checks
-    if model == MODEL_C and not is_breakout:
+    # Session checks
+    if is_breakout:
         return False, "wrong_session"
-    if model == MODEL_A and is_breakout:
-        return False, "model_priority"
-    if model == MODEL_A and session not in _MODEL_SESSIONS[MODEL_A]:
-        return False, "wrong_session"
-    if model == MODEL_B and session not in _MODEL_SESSIONS[MODEL_B]:
+    if session not in _MODEL_SESSIONS[MODEL_A]:
         return False, "wrong_session"
 
     # Session limit
-    today    = bar_dt.date()
-    sess_key = "LONDON_BREAKOUT" if model == MODEL_C else session
-    if state["session_counts"].get((sess_key, model, today), 0) >= _SESSION_LIMIT[model]:
+    today = bar_dt.date()
+    if state["session_counts"].get((session, model, today), 0) >= _SESSION_LIMIT[model]:
         return False, "session_limit"
 
     return True, "ok"
@@ -272,9 +245,8 @@ def _open_trade(signal, bar, state, slippage: float = 0.0, fixed_lot: float = No
         "slippage":       slippage,
     }
     state["open_trades"].append(trade)
-    today    = bar.name.date()
-    sess_key = "LONDON_BREAKOUT" if signal["model"] == MODEL_C else signal.get("session", "")
-    key      = (sess_key, signal["model"], today)
+    today = bar.name.date()
+    key   = (signal.get("session", ""), signal["model"], today)
     state["session_counts"][key] = state["session_counts"].get(key, 0) + 1
 
 
@@ -392,57 +364,32 @@ def _try_exit_rr(trade, bar, bar_dt):
     return None
 
 
-# ─── Signal generation (all models for a bar) ────────────────────────────────
+# ─── Signal generation ───────────────────────────────────────────────────────
 
-def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, h4_bias,
-                               ah, al, models_to_run):
-    """
-    Generate signals from all eligible models for this bar.
-
-    Model priority: C > A > B (C has exclusive breakout window).
-    In the same bar, only ONE model fires (first match wins).
-    """
-    signals = []
-
-    # Model C: exclusive during LONDON_BREAKOUT
-    if MODEL_C in models_to_run and is_breakout:
-        sig = _model_c(df_m5_win, ah, al, h4_bias)
-        if sig:
-            signals.append(sig)
-            return signals  # exclusive window — no other model fires
-
-    # Model A: GRIND regimes
-    if MODEL_A in models_to_run and not is_breakout and session in _MODEL_SESSIONS[MODEL_A]:
-        if regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
-            sig = _model_a(df_m5_win, session, regime)
-            if sig:
-                signals.append(sig)
-
-    # Model B: TIGHT_RANGE (can fire alongside Model A if different regime,
-    # but in practice regimes are mutually exclusive per bar)
-    if MODEL_B in models_to_run and not is_breakout and MODEL_B in _MODEL_SESSIONS and session in _MODEL_SESSIONS[MODEL_B]:
-        if regime == REGIME_TIGHT_RANGE:
-            sig = _model_b(df_m5_win, session, regime)
-            if sig:
-                signals.append(sig)
-
-    return signals
+def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias="NEUTRAL"):
+    """Generate Model A signal for this bar if conditions are met."""
+    if is_breakout or session not in _MODEL_SESSIONS[MODEL_A]:
+        return []
+    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
+        return []
+    sig = _model_a(df_m5_win, session, regime, macro_bias=macro_bias)
+    return [sig] if sig else []
 
 
 # ─── Core backtest engine ────────────────────────────────────────────────────
 
-def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
+def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
                  start_bar: int, end_bar: int, models_to_run=None,
                  fixed_lot: float = None) -> dict:
     """
-    Run backtest with specified models sharing one account.
+    Run backtest with Model A.
 
     Args:
-        models_to_run: set of model names, or None for all 3.
+        models_to_run: set of model names (default: {MODEL_A}).
         fixed_lot: if set, every trade uses this lot size (bypasses anti-martingale).
     """
     if models_to_run is None:
-        models_to_run = {MODEL_A, MODEL_C}
+        models_to_run = {MODEL_A}
 
     # Precompute ATR percentile for dynamic spread/slippage
     atr_pctile = _precompute_atr_pctile(df_m5_ind)
@@ -492,11 +439,11 @@ def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
         if session is None:
             continue
 
-        # Regime + H4 bias
-        rm = regime_map.get(i, {"regime": REGIME_TIGHT_RANGE, "h4_bias": HTF_BIAS_NEUTRAL,
-                                "structural_break": False})
+        # Regime
+        _default_rm = {"regime": "TIGHT_RANGE", "structural_break": False, "macro_bias": "NEUTRAL"}
+        rm = regime_map.get(i, _default_rm)
         regime = rm["regime"]
-        h4_bias = rm["h4_bias"]
+        macro_bias = rm.get("macro_bias", "NEUTRAL")
 
         # Structural break cooldown
         if rm["structural_break"]:
@@ -504,24 +451,19 @@ def run_backtest(df_m5_ind, asian_ranges, regime_map, balance: float,
         if state["structural_break_until"] and dt < state["structural_break_until"]:
             continue
 
-        ah, al = asian_ranges.get(today, (0.0, 0.0))
         df_m5_win = df_m5_ind.iloc[max(0, i - 500) : i + 1]
 
-        # Dead zone: block Model A during 14:00-15:00 UTC (48% WR, US midday doldrums)
-        active_models = models_to_run
-        if (MODEL_A in models_to_run and session == "NY_OVERLAP"
-                and NY_OVERLAP_DEAD_HOUR_START <= dt.hour < NY_OVERLAP_DEAD_HOUR_END):
-            active_models = models_to_run - {MODEL_A}
+        # Dead zone: block Model A during 14:00-15:00 UTC (US midday doldrums)
+        if session == "NY_OVERLAP" and NY_OVERLAP_DEAD_HOUR_START <= dt.hour < NY_OVERLAP_DEAD_HOUR_END:
+            continue
 
-        # Generate signals from all eligible models
-        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
-                                         h4_bias, ah, al, active_models)
+        # Generate signals
+        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias)
 
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
             signals_generated += 1
-            ok, reason = _validate(sig, state, session, is_breakout, dt, regime,
-                                   h4_bias, allowed_models=models_to_run)
+            ok, reason = _validate(sig, state, session, is_breakout, dt, regime)
             if ok:
                 _open_trade(sig, bar, state, slippage=bar_slippage, fixed_lot=fixed_lot)
             else:
@@ -672,7 +614,7 @@ def _print_summary(res: dict, start_bal: float, trading_days: int):
     # Monthly P&L breakdown — shows if gains are concentrated in one lucky period
     print()
     print("  Monthly P&L (equity curve check):")
-    df["_month"] = df["open_time"].dt.to_period("M")
+    df["_month"] = df["open_time"].dt.tz_localize(None).dt.to_period("M")
     running_bal = start_bal
     for month, grp in df.groupby("_month"):
         mw   = (grp["result"] == "WIN").sum()
@@ -740,15 +682,13 @@ def _count_trading_days(df_m5: pd.DataFrame) -> int:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    p = argparse.ArgumentParser(description="HONORED backtest — combined (default) or per-model.")
+    p = argparse.ArgumentParser(description="HONORED backtest — Model A (OU_GRIND).")
     p.add_argument("--m5",      default="data/XAUUSD_M5.csv")
     p.add_argument("--h1",      default="data/XAUUSD_H1.csv")
-    p.add_argument("--h4",      default="data/XAUUSD_H4.csv")
     p.add_argument("--balance", type=float, default=20.0)
-    p.add_argument("--model",   choices=["A", "B", "C", "combined"],
-                   default="combined",
-                   help="Which model to test (default: combined)")
     p.add_argument("--days",       type=int,   help="Run backtest for the last N days only.")
+    p.add_argument("--start-date", help="Start date filter YYYY-MM-DD (inclusive).")
+    p.add_argument("--end-date",   help="End date filter YYYY-MM-DD (inclusive).")
     p.add_argument("--save-csv",               help="Save detailed trade log to a CSV file.")
     p.add_argument("--fixed-lot",  type=float, help="Use a fixed lot size (e.g. 0.01) — bypasses anti-martingale compounding. Shows pure signal quality P&L.")
     p.add_argument("--walk-forward", action="store_true",
@@ -758,7 +698,6 @@ def main():
     # Load data
     df_m5 = _load_csv(a.m5, "M5")
     df_h1 = _load_csv(a.h1, "H1")
-    df_h4 = _load_csv(a.h4, "H4")
     total_bars = len(df_m5)
 
     if total_bars < _WARMUP_M5 + 50:
@@ -769,26 +708,28 @@ def main():
     df_m5_ind = add_indicators(df_m5.copy())
 
     print("Precomputing 6-state regime for each M5 bar ...")
-    regime_map = _precompute_regime(df_h1, df_h4, df_m5_ind)
+    regime_map = _precompute_regime(df_h1, df_m5_ind)
     print("Done.\n")
 
-    asian_ranges = _precompute_asian_ranges(df_m5)
-
-    # Determine start bar
+    # Determine start/end bar
     start_bar = _WARMUP_M5
+    end_bar   = total_bars
     if a.days:
         cutoff = df_m5.index[-1] - timedelta(days=a.days)
         start_bar = max(_WARMUP_M5, df_m5.index.searchsorted(cutoff))
         print(f"Backtesting last {a.days} days (starting from bar {start_bar} / {total_bars})")
+    if getattr(a, "start_date", None):
+        from datetime import timezone as _tz
+        sd = datetime.strptime(a.start_date, "%Y-%m-%d").replace(tzinfo=_tz.utc)
+        start_bar = max(_WARMUP_M5, int(df_m5.index.searchsorted(sd)))
+        print(f"Start date filter: {a.start_date} (bar {start_bar})")
+    if getattr(a, "end_date", None):
+        from datetime import timezone as _tz
+        ed = datetime.strptime(a.end_date, "%Y-%m-%d").replace(tzinfo=_tz.utc) + timedelta(days=1)
+        end_bar = min(total_bars, int(df_m5.index.searchsorted(ed)))
+        print(f"End date filter  : {a.end_date} (bar {end_bar})")
 
-    model_map = {
-        "A": {MODEL_A},
-        "B": {MODEL_B},
-        "C": {MODEL_C},
-        "combined": {MODEL_A},
-    }
-    models = model_map[a.model]
-    label = "COMBINED" if a.model == "combined" else f"Model {a.model}"
+    label = "Model A"
     fixed_lot = getattr(a, "fixed_lot", None)
 
     print(f"  Account Type   : {ACCOUNT_TYPE} (Point Value: {XAUUSD_POINT_VALUE})")
@@ -797,10 +738,10 @@ def main():
 
     if a.walk_forward:
         # ── Walk-forward: split period into two equal halves ──────────────────
-        mid_bar = (start_bar + total_bars) // 2
+        mid_bar = (start_bar + end_bar) // 2
         halves = [
             ("H1 — first half",  start_bar, mid_bar),
-            ("H2 — second half", mid_bar,   total_bars),
+            ("H2 — second half", mid_bar,   end_bar),
         ]
         for half_label, hstart, hend in halves:
             print(f"\n{'─' * 50}")
@@ -808,17 +749,17 @@ def main():
             print(f"  {df_m5.index[hstart]:%Y-%m-%d}  →  {df_m5.index[hend-1]:%Y-%m-%d}")
             print(f"{'─' * 50}")
             tdays = _count_trading_days(df_m5.iloc[hstart:hend])
-            res = run_backtest(df_m5_ind, asian_ranges, regime_map, a.balance,
-                               hstart, hend, models_to_run=models, fixed_lot=fixed_lot)
+            res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
+                               hstart, hend, fixed_lot=fixed_lot)
             _print_summary(res, a.balance, tdays)
     else:
         # ── Standard full-period run ──────────────────────────────────────────
         print(f"\n{'─' * 50}")
         print(f"  Running backtest: {label}")
         print(f"{'─' * 50}")
-        trading_days = _count_trading_days(df_m5.iloc[start_bar:])
-        res = run_backtest(df_m5_ind, asian_ranges, regime_map, a.balance,
-                           start_bar, total_bars, models_to_run=models, fixed_lot=fixed_lot)
+        trading_days = _count_trading_days(df_m5.iloc[start_bar:end_bar])
+        res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
+                           start_bar, end_bar, fixed_lot=fixed_lot)
         df_results = _print_summary(res, a.balance, trading_days)
 
         if a.save_csv and df_results is not None and not df_results.empty:

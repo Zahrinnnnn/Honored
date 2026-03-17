@@ -101,11 +101,10 @@ async def _poll(state: StateManager):
 
     # ── 4. Run validation ─────────────────────────────────────────────────────
     result = await validate(
-        signal             = signal,
-        state              = state,
-        current_session    = ctx.name,
-        is_breakout_window = ctx.is_breakout_window,
-        current_spread     = current_spread,
+        signal          = signal,
+        state           = state,
+        current_session = ctx.name,
+        current_spread  = current_spread,
     )
 
     # ── 5. Write decision ─────────────────────────────────────────────────────

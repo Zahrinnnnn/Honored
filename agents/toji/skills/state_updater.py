@@ -23,7 +23,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from core.constants import MODEL_C
 from core.state_manager import StateManager
 
 logger = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ async def post_trade_update(
         balance_before: Account balance at trade open.
         open_time:      ISO timestamp when trade was opened (for duration calc).
         session:        Session name from the signal (e.g. "LONDON_OPEN").
-        model:          Model constant (MODEL_A, MODEL_B, or MODEL_C).
+        model:          Model constant (e.g. MODEL_A).
 
     Returns:
         Tuple of (balance_after, drawdown_pct, duration_mins).
@@ -86,9 +85,7 @@ async def post_trade_update(
         await state.increment_consecutive_losses()
 
     # ── 2. Session trade count ──────────────────────────────────────────────
-    # Model C uses "LONDON_BREAKOUT" as its session key (daily limit, not per-session).
-    session_key = "LONDON_BREAKOUT" if model == MODEL_C else session
-    await state.increment_session_trade_count(session_key, model)
+    await state.increment_session_trade_count(session, model)
 
     # ── 3. Account snapshot ─────────────────────────────────────────────────
     await state.update_account(

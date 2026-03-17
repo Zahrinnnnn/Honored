@@ -216,8 +216,20 @@ def main():
         choices=list(_DEFAULT_TIMEFRAMES.keys()),
         help="Timeframes to fetch (default: all). Example: --timeframes 15m 1h 4h 1d"
     )
+    p.add_argument(
+        "--output-prefix", default="",
+        help="Prefix appended before file extension. E.g. '2yr' → XAUUSD_M5_2yr.csv"
+    )
     a = p.parse_args()
-    tf_map = {tf: _DEFAULT_TIMEFRAMES[tf] for tf in a.timeframes}
+    tf_map = {}
+    for tf, path in _DEFAULT_TIMEFRAMES.items():
+        if tf not in a.timeframes:
+            continue
+        if a.output_prefix:
+            # Insert prefix before .csv: data/XAUUSD_M5.csv → data/XAUUSD_M5_2yr.csv
+            base, ext = path.rsplit(".", 1)
+            path = f"{base}_{a.output_prefix}.{ext}"
+        tf_map[tf] = path
     sys.exit(asyncio.run(run(a.days, tf_map)))
 
 

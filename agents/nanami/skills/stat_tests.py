@@ -2,18 +2,16 @@
 stat_tests.py — NANAMI skill
 
 Statistical primitives for quantitative regime detection and signal generation.
-Used by htf_regime, indicator_engine, ou_grind, and ou_range.
 
 Public API
 ──────────
 rolling_hurst(prices, window=HURST_WINDOW) → float
 classify_hurst(h) → str
-adf_stationary(series, significance=MODEL_B_ADF_SIGNIFICANCE) → dict
+adf_stationary(series, significance=ADF_P_VALUE_THRESHOLD) → dict
 fit_ou(prices, dt=1/1440) → dict | None
 ou_zscore(price, ou_params) → float
 KalmanPriceFilter — class (constant-velocity Kalman filter)
 kalman_velocity(prices, q_scale=MODEL_A_KALMAN_Q_SCALE) → float
-compute_macro_bias(prices, window, q_scale) → str
 """
 
 import logging
@@ -25,13 +23,8 @@ from core.constants import (
     HURST_TRENDING_THRESHOLD,
     HURST_RANGING_THRESHOLD,
     HURST_WINDOW,
-    MACRO_BIAS_DOWN,
-    MACRO_BIAS_NEUTRAL,
-    MACRO_BIAS_Q_SCALE,
-    MACRO_BIAS_UP,
-    MACRO_BIAS_WINDOW,
     MODEL_A_KALMAN_Q_SCALE,
-    MODEL_B_ADF_SIGNIFICANCE,
+    ADF_P_VALUE_THRESHOLD,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,14 +96,14 @@ def classify_hurst(h: float) -> str:
 
 def adf_stationary(
     series: np.ndarray,
-    significance: float = MODEL_B_ADF_SIGNIFICANCE,
+    significance: float = ADF_P_VALUE_THRESHOLD,
 ) -> dict:
     """
     Augmented Dickey-Fuller test for stationarity.
 
     Uses statsmodels adfuller with maxlag=20, autolag='AIC'.
     Fail-safe: returns {stationary: False} on any error so that
-    the Model B gate stays closed rather than opening on bad data.
+    the signal gate stays closed rather than opening on bad data.
 
     Returns:
         {
@@ -317,46 +310,3 @@ def kalman_velocity(
     _, vels = kf.fit(prices)
     return float(vels[-1])
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Macro Directional Bias
-# ─────────────────────────────────────────────────────────────────────────────
-
-def compute_macro_bias(
-    prices: np.ndarray,
-    window: int = MACRO_BIAS_WINDOW,
-    q_scale: float = MACRO_BIAS_Q_SCALE,
-) -> str:
-    """
-    Determine the macro directional bias from a large M5 price window.
-
-    Uses a smoothed Kalman velocity filter (q_scale=0.001, 10x smoother
-    than the intraday 0.01) on the last ``window`` M5 bars to detect the
-    dominant trend direction over ~3.5 trading days.
-
-    No dead zone: any positive velocity = UP, any negative = DOWN.
-    The large window + small q_scale already filters intraday noise.
-
-    Returns:
-        "UP"      if final Kalman velocity > 0
-        "DOWN"    if final Kalman velocity < 0
-        "NEUTRAL" if insufficient data (< 50 bars)
-    """
-    if len(prices) < 50:
-        return MACRO_BIAS_NEUTRAL
-
-    px = prices[-window:] if len(prices) >= window else prices
-
-    tail = px[-50:] if len(px) >= 51 else px
-    r = float(np.var(np.diff(tail)))
-    r = max(r, 1e-8)
-
-    kf = KalmanPriceFilter(r=r, q_scale=q_scale)
-    _, vels = kf.fit(px)
-    vel = float(vels[-1])
-
-    if vel > 0:
-        return MACRO_BIAS_UP
-    if vel < 0:
-        return MACRO_BIAS_DOWN
-    return MACRO_BIAS_NEUTRAL
