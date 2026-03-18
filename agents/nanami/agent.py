@@ -52,8 +52,8 @@ from agents.nanami.skills import (  # noqa: E402
     indicator_engine,
     session_detector,
     ou_grind,
-    momentum_blowoff,
 )
+from agents.nanami.skills.london_reversal import generate_signal as london_reversal_signal  # noqa: E402
 from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
     check_structural_break,
@@ -175,10 +175,12 @@ async def _poll(state: StateManager):
     # ── 9. Signal generation based on regime ─────────────────────────────
     signal = None
 
-    if regime in NO_TRADE_REGIMES:
-        logger.info("Regime=%s — no trading allowed", regime)
+    # ── Model B: London reversal — fires in LONDON_OPEN regardless of regime ─
+    if session in MODEL_SESSIONS[MODEL_B]:
+        signal = await _try_model_b(state, df_m5, session, macro_bias)
 
-    elif regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
+    # ── Model A: OU grind — GRIND regimes only, NY_OVERLAP, no dead zone ────
+    if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
         if session in MODEL_SESSIONS[MODEL_A]:
             utc_hour = datetime.now(timezone.utc).hour
             if NY_OVERLAP_DEAD_HOUR_START <= utc_hour < NY_OVERLAP_DEAD_HOUR_END:
@@ -186,9 +188,8 @@ async def _poll(state: StateManager):
             else:
                 signal = await _try_model_a(state, df_m5, session, regime, macro_bias)
 
-    elif regime in (REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
-        if session in MODEL_SESSIONS[MODEL_B]:
-            signal = await _try_model_b(state, df_m5, session, regime)
+    if regime in NO_TRADE_REGIMES and signal is None:
+        logger.info("Regime=%s — no trading allowed", regime)
 
     # ── 10. Persist signal ───────────────────────────────────────────────
     if signal:
@@ -199,7 +200,7 @@ async def _poll(state: StateManager):
             "Signal → %s %s | entry=%.2f  SL=%.2f  TP=%.2f | %s",
             signal["model"], signal["direction"],
             signal["entry_price"], signal["sl_price"], signal["tp_price"],
-            signal["reason"],
+            signal.get("reason", f"score={signal.get('score', '?')}"),
         )
     else:
         logger.debug("No signal this poll — session=%s regime=%s", session, regime)
@@ -209,8 +210,8 @@ async def _poll(state: StateManager):
 # Per-model helpers
 # ---------------------------------------------------------------------------
 
-async def _try_model_b(state: StateManager, df_m5, session: str, regime: str):
-    """Check session limit, run Model B (momentum blowoff)."""
+async def _try_model_b(state: StateManager, df_m5, session: str, macro_bias: str = "NEUTRAL"):
+    """Check session limit, run Model B (London reversal)."""
     count = await state.get_session_trade_count(session, MODEL_B)
     if count >= MODEL_SESSION_LIMITS[MODEL_B]:
         logger.debug(
@@ -218,11 +219,11 @@ async def _try_model_b(state: StateManager, df_m5, session: str, regime: str):
             count, MODEL_SESSION_LIMITS[MODEL_B], session,
         )
         return None
-    return momentum_blowoff.generate_signal(df_m5, session, regime)
+    return london_reversal_signal(df_m5, session, h4_bias=macro_bias)
 
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, macro_bias: str = "NEUTRAL"):
-    """Check session limit, run Model A (OU grind)."""
+    """Check session limit, run Model A (OU grind) with H4 bias gate."""
     count = await state.get_session_trade_count(session, MODEL_A)
     if count >= MODEL_SESSION_LIMITS[MODEL_A]:
         logger.debug(
@@ -231,7 +232,19 @@ async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, ma
         )
         return None
 
-    return ou_grind.generate_signal(df_m5, session, regime, macro_bias=macro_bias)
+    signal = ou_grind.generate_signal(df_m5, session, regime, macro_bias=macro_bias)
+    if signal is None:
+        return None
+
+    # H4 bias gate: only trade with the macro trend
+    if signal["direction"] == "BUY" and macro_bias == "BEARISH":
+        logger.debug("Model A BUY blocked — H4 bias is BEARISH")
+        return None
+    if signal["direction"] == "SELL" and macro_bias == "BULLISH":
+        logger.debug("Model A SELL blocked — H4 bias is BULLISH")
+        return None
+
+    return signal
 
 
 # ---------------------------------------------------------------------------

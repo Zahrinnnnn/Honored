@@ -56,8 +56,10 @@ STRUCTURAL_BREAK_COOLDOWN_HOURS  = 4     # hours to cool down
 # Exit System: Fixed 1:2 RR + Breakeven Protection
 # ─────────────────────────────────────────────────────────────────────────────
 RR_RATIO                     = 2.0    # TP = SL × 2
-BREAKEVEN_ATR_THRESHOLD      = 1.0    # Move SL to entry at +1 ATR profit
-TIME_KILL_MINUTES            = 60     # Close if not profitable after 60 min
+BREAKEVEN_ATR_THRESHOLD      = 1.5    # opt 2: Move SL to entry at +1.5 ATR (was 1.0 — reduces whipsaw BEs)
+MODEL_A_TIME_KILL_MINUTES    = 60     # Model A fallback (no half_life) — 60 min
+MODEL_B_TIME_KILL_MINUTES    = 120    # Model B London reversal — reversals need more time
+TIME_KILL_MINUTES            = 60     # Legacy alias (used by Model C / fallback)
 MAX_TRADE_DURATION_MINUTES   = 240    # Hard cap: 4 hours
 
 # ─────────────────────────────────────────────────────────────────────────────

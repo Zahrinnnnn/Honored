@@ -36,6 +36,7 @@ load_dotenv()
 from agents.nanami.skills.indicator_engine import add_indicators
 from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_macro_bias, compute_h4_bias
 from agents.nanami.skills.ou_grind import generate_signal as _ou_signal
+from agents.nanami.skills.london_reversal import generate_signal as _london_reversal_signal
 from agents.toji.skills.lot_calculator import calculate_lot
 from agents.toji.skills.trade_monitor import calculate_pnl
 from core.constants import (
@@ -83,9 +84,9 @@ _BLACKOUT_END   = time(7,  0)
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
     MODEL_A: {"NY_OVERLAP"},
-    MODEL_B: {"NY_OVERLAP", "LONDON_OPEN"},
+    MODEL_B: {"LONDON_OPEN"},
 }
-_SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 8}
+_SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 2}   # max 2 London trades per day total
 
 
 # ─── Session helpers ──────────────────────────────────────────────────────────
@@ -228,8 +229,8 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
 
     direction = signal.get("direction", "")
 
-    # Regime directional gate — same rules for both Model A (NY) and Model B (London)
-    if model in (MODEL_A, MODEL_B):
+    # Regime directional gate — Model A only (Model B is regime-agnostic fakeout)
+    if model == MODEL_A:
         if direction == "BUY" and regime not in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF):
             return False, "regime_blocked"
         if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
@@ -395,9 +396,15 @@ def _try_exit_rr(trade, bar, bar_dt):
         result = "WIN" if profit_distance > 0 else "LOSS"
         return {"result": result, "exit_price": close, "exit_reason": "MAX_DURATION"}
 
-    # OU-calibrated time kill: 2 × half_life_bars × 5 min
+    # OU-calibrated time kill: 3 × half_life_bars × 5 min
+    # Model B (London reversal): no half_life — use 120 min (reversals need more time than NY OU)
     half_life = float(trade.get("half_life_bars", 0.0))
-    time_kill_mins = half_life * OU_TIME_KILL_HALF_LIFE_MULT * 5.0 if half_life > 0 else TIME_KILL_MINUTES
+    if half_life > 0:
+        time_kill_mins = half_life * OU_TIME_KILL_HALF_LIFE_MULT * 5.0
+    elif trade.get("model") == MODEL_B:
+        time_kill_mins = 120.0
+    else:
+        time_kill_mins = TIME_KILL_MINUTES
 
     if elapsed_mins >= time_kill_mins:
         if direction == "BUY" and close <= entry:
@@ -436,6 +443,12 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
             else:
                 sigs.append(sig)
 
+    # Model B — London multi-signal reversal (Kalman + CUSUM + N-bar + Volume climax)
+    if session in _MODEL_SESSIONS[MODEL_B]:
+        sig = _london_reversal_signal(df_m5_win, session, regime=regime, h4_bias=h4_bias)
+        if sig:
+            sigs.append(sig)
+
     return sigs
 
 
@@ -464,6 +477,8 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         "open_trades":            [],
         "session_counts":         {},
         "soft_halt":              False,
+        "orb_fired_date":         None,    # ORB fires at most once per day
+        "vwap_last_entry_bar":    -999,    # VWAP cooldown: bar index of last entry
         "emergency_halt":         False,
         "all_trades":             [],
         "refill_count":           0,
@@ -531,6 +546,14 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
             signals_generated += 1
+
+            # London reversal: cooldown 12 bars (60 min) between entries
+            if sig["model"] == MODEL_B:
+                if i - state["vwap_last_entry_bar"] < 12:
+                    reject_reasons["london_cooldown"] += 1
+                    continue
+                state["vwap_last_entry_bar"] = i
+
             ok, reason = _validate(sig, state, session, is_breakout, dt, regime)
             if ok:
                 _open_trade(sig, bar, state, slippage=bar_slippage, fixed_lot=fixed_lot)

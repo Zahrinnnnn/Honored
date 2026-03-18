@@ -22,7 +22,7 @@ Public API
 validate(signal, state, current_session, current_spread)
     → ValidationResult
 
-_regime_and_bias_ok(model, direction, regime) → bool   (exposed for testing)
+_regime_and_bias_ok(model, direction, regime, h4_bias) → bool   (exposed for testing)
 """
 
 import logging
@@ -32,6 +32,7 @@ from typing import Optional
 
 from core.constants import (
     MODEL_A,
+    MODEL_B,
     ACTIVE_SESSIONS,
     MODEL_SESSION_LIMITS,
     MAX_CONSECUTIVE_LOSSES,
@@ -83,20 +84,32 @@ class ValidationResult:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _regime_and_bias_ok(
-    model: str, direction: str, regime: str,
+    model: str, direction: str, regime: str, h4_bias: str = "NEUTRAL",
 ) -> bool:
     """
-    Returns True if the regime allows this trade direction.
+    Returns True if the regime + H4 bias allows this trade direction.
 
     Model A (OU Grind):
-        BUY  → requires regime == BULLISH_GRIND
-        SELL → requires regime == BEARISH_GRIND
+        BUY  → regime == BULLISH_GRIND AND h4_bias != BEARISH
+        SELL → regime == BEARISH_GRIND AND h4_bias != BULLISH
+
+    Model B (London Reversal):
+        Regime-agnostic — H4 bias gate only:
+        BUY  → h4_bias != BEARISH
+        SELL → h4_bias != BULLISH
     """
     if model == MODEL_A:
         if direction == "BUY":
-            return regime == REGIME_BULLISH_GRIND
+            return regime == REGIME_BULLISH_GRIND and h4_bias != "BEARISH"
         if direction == "SELL":
-            return regime == REGIME_BEARISH_GRIND
+            return regime == REGIME_BEARISH_GRIND and h4_bias != "BULLISH"
+        return False
+
+    if model == MODEL_B:
+        if direction == "BUY":
+            return h4_bias != "BEARISH"
+        if direction == "SELL":
+            return h4_bias != "BULLISH"
         return False
 
     logger.warning("_regime_and_bias_ok: unknown model '%s'", model)
@@ -147,8 +160,9 @@ async def validate(
     checks["session_valid"] = current_session in _ALLOWED_SESSIONS
 
     # ── 2. regime_and_bias_ok ───────────────────────────────────────────────
-    regime = await state.get_session_info("current_regime") or ""
-    checks["regime_and_bias_ok"] = _regime_and_bias_ok(model, direction, regime)
+    regime   = await state.get_session_info("current_regime") or ""
+    h4_bias  = await state.get_session_info("macro_bias") or "NEUTRAL"
+    checks["regime_and_bias_ok"] = _regime_and_bias_ok(model, direction, regime, h4_bias)
 
     # ── 3. session_trades_within_limit ──────────────────────────────────────
     trade_count = await state.get_session_trade_count(session, model)
