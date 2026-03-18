@@ -510,7 +510,8 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
             continue
 
         # Generate signals
-        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias, h4_bias)
+        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
+                                          macro_bias, h4_bias)
 
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
