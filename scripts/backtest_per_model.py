@@ -66,6 +66,11 @@ BUST_THRESHOLD = 0.50  # refill when balance drops below this
 MAX_SIMULTANEOUS_TRADES = 4  # max open trades at once — prevents correlated cluster blowup
 DAILY_LOSS_LIMIT_PCT = 0.15  # stop new signals if today's loss exceeds 15% of day-open balance
 
+# ── Opt 2: Breakeven protection raised to +1.5 ATR ─────────────────────────
+# Original: move SL to entry at +1.0 ATR — triggers too early, whipsaws back to entry (31 BEs)
+# New: wait for +1.5 ATR confirmation before locking in breakeven
+_BREAKEVEN_ATR_TRIGGER = 1.5
+
 _WINDOWS = {
     "LONDON_BREAKOUT": (time(7,  0), time(7, 30)),
     "LONDON_OPEN":     (time(7, 30), time(10, 0)),
@@ -286,6 +291,7 @@ def _open_trade(signal, bar, state, slippage: float = 0.0, fixed_lot: float = No
     state["session_counts"][key] = state["session_counts"].get(key, 0) + 1
 
 
+
 def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SPREAD_BASE_USD):
     result      = exit_info["result"]
     exit_price  = exit_info["exit_price"]
@@ -364,13 +370,15 @@ def _try_exit_rr(trade, bar, bar_dt):
         if lo <= trade["tp_price"]:
             return {"result": "WIN", "exit_price": trade["tp_price"], "exit_reason": "TP_HIT"}
 
-    # Breakeven protection: at +1 ATR profit, move SL to entry
+    # Current profit in price points
     if direction == "BUY":
         profit_distance = close - entry
     else:
         profit_distance = entry - close
 
-    if profit_distance >= BREAKEVEN_ATR_THRESHOLD * atr:
+    # Opt 2 — Breakeven protection raised to +1.5 ATR (was 1.0).
+    # Reduces whipsaw BEs: price must travel further before SL locks to entry.
+    if profit_distance >= _BREAKEVEN_ATR_TRIGGER * atr:
         if direction == "BUY" and trade["sl_price"] < entry:
             trade["sl_price"] = entry
         elif direction == "SELL" and trade["sl_price"] > entry:
@@ -416,11 +424,15 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
     if session in _MODEL_SESSIONS[MODEL_A] and regime in _allowed_regimes:
         sig = _ou_signal(df_m5_win, session, regime, macro_bias=macro_bias)
         if sig:
-            # H4 bias SELL gate: only allow SELL in BEARISH_GRIND when H4 confirms bearish.
-            # Blocks bad SELLs during brief corrections in bull markets (H4 still BULLISH).
-            # Keeps good SELLs during genuine multi-day downtrends (H4 flips BEARISH).
-            if sig["direction"] == "SELL" and h4_bias != "BEARISH":
-                pass  # H4 not confirming — skip
+            direction = sig["direction"]
+            # Opt 1 — H4 SMA50 BUY gate: only allow BUY when H4 confirms bullish trend.
+            # Cuts BUY entries during macro downtrends where BULLISH_GRIND is a retracement,
+            # not a genuine uptrend. H4 SMA50 is slow — only flips on multi-week moves.
+            if direction == "BUY" and h4_bias != "BULLISH":
+                pass  # H4 macro bearish/neutral — skip BUY
+            # Opt 1 — H4 SMA50 SELL gate (existing): only allow SELL when H4 confirms bearish.
+            elif direction == "SELL" and h4_bias != "BEARISH":
+                pass  # H4 not confirming bearish — skip SELL
             else:
                 sigs.append(sig)
 

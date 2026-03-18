@@ -71,9 +71,9 @@ OU_LOOKBACK               = 80    # bars for OU window (EMA50 detrend)
 OU_LOOKBACK_MID           = 60    # mid detrend window (EMA34 residuals)
 OU_LOOKBACK_SHORT         = 40    # short detrend window (EMA21 residuals)
 OU_ZSCORE_EMA34_THRESHOLD  = 1.0   # Model A EMA34 z-score (between EMA50=0.9 and EMA21=1.3)
-OU_ZSCORE_BLOWOFF_THRESHOLD = 0.6  # shallower dip entry in blowoff (strong macro momentum)
+OU_ZSCORE_BLOWOFF_THRESHOLD = 1.0  # opt 6: tightened — only enter on deep dips in blowoff
 OU_MAX_HALF_LIFE_BLOWOFF    = 25   # tighter half-life cap — blowoff dips snap back fast
-OU_TIME_KILL_HALF_LIFE_MULT = 2   # close after 2 × half_life_bars M5 bars
+OU_TIME_KILL_HALF_LIFE_MULT = 3   # opt 7: extended from 2 — more room for OU to resolve
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
 OU_SL_MAX                 = 12.0  # $12 maximum SL distance
