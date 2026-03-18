@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import os
+import random
 import sys
 from collections import defaultdict
 from datetime import datetime, time, timedelta
@@ -402,7 +403,8 @@ def _try_exit_rr(trade, bar, bar_dt):
 # ─── Signal generation ───────────────────────────────────────────────────────
 
 def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
-                               macro_bias="NEUTRAL", h4_bias="NEUTRAL"):
+                               macro_bias="NEUTRAL", h4_bias="NEUTRAL",
+                               blowoff_age: int = 0):
     """Generate Model A (NY_OVERLAP) signals for this bar."""
     if is_breakout:
         return []
@@ -495,6 +497,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         rm = regime_map.get(i, _default_rm)
         regime = rm["regime"]
         macro_bias = rm.get("macro_bias", "NEUTRAL")
+        blowoff_age = rm.get("blowoff_age", 0)
         h4_bias = h4_bias_map.get(i, "NEUTRAL") if h4_bias_map else "NEUTRAL"
 
         # Structural break cooldown
@@ -511,7 +514,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
 
         # Generate signals
         sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
-                                          macro_bias, h4_bias)
+                                          macro_bias, h4_bias, blowoff_age=blowoff_age)
 
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
@@ -531,6 +534,108 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         "reject_reasons":     dict(reject_reasons),
         "exit_reason_tally":  dict(exit_reason_tally),
     }
+
+
+# ─── Monte Carlo ─────────────────────────────────────────────────────────────
+
+def run_monte_carlo(trades: list, start_balance: float, n_sims: int = 2000):
+    """
+    Monte Carlo: shuffle trade ORDER and re-simulate with proper anti-martingale lot sizing.
+
+    Shuffling fixed P&L values is wrong — lot sizes depend on order (consecutive losses
+    change the lot via anti-martingale). Instead we store the price movement per unit
+    and re-calculate lot + P&L for each reshuffled sequence.
+    """
+    if not trades:
+        print("  Monte Carlo: no trades to simulate.")
+        return
+
+    # Extract replayable trade units (order-invariant primitives)
+    trade_units = []
+    for t in trades:
+        direction = t["direction"]
+        price_move = (
+            (t["exit_price"] - t["entry_price"]) if direction == "BUY"
+            else (t["entry_price"] - t["exit_price"])
+        )
+        raw_per_lot    = price_move * XAUUSD_POINT_VALUE
+        lot            = t["lot_size"]
+        spread_per_lot = (t["spread_cost"] / lot) if lot > 0 else 0.0
+        sl_usd_per_lot = t["sl_distance"] * XAUUSD_POINT_VALUE
+        trade_units.append({
+            "raw_per_lot":    raw_per_lot,
+            "spread_per_lot": spread_per_lot,
+            "sl_usd_per_lot": sl_usd_per_lot,
+            "result":         t["result"],
+        })
+
+    n = len(trade_units)
+    final_balances = []
+    max_dds = []
+    rng = random.Random(42)
+
+    for _ in range(n_sims):
+        shuffled = trade_units[:]
+        rng.shuffle(shuffled)
+        bal = start_balance
+        peak = start_balance
+        max_dd = 0.0
+        consec_losses = 0
+
+        for unit in shuffled:
+            lot = calculate_lot(bal, unit["sl_usd_per_lot"],
+                                consecutive_losses=consec_losses)
+            pnl = round(lot * unit["raw_per_lot"] - lot * unit["spread_per_lot"], 4)
+            bal += pnl
+
+            if bal > peak:
+                peak = bal
+            dd = (peak - max(0.0, bal)) / max(peak, 1e-9) * 100
+            if dd > max_dd:
+                max_dd = dd
+
+            # Auto-refill on bust (mirrors backtest engine)
+            if bal < BUST_THRESHOLD:
+                bal = start_balance
+                peak = start_balance
+                consec_losses = 0
+                continue
+
+            if unit["result"] in ("WIN", "BREAKEVEN"):
+                consec_losses = 0
+            else:
+                consec_losses += 1
+
+        final_balances.append(bal)
+        max_dds.append(max_dd)
+
+    final_balances.sort()
+    max_dds.sort()
+
+    profitable   = sum(1 for b in final_balances if b > start_balance) / n_sims * 100
+    busted       = sum(1 for b in final_balances if b <= BUST_THRESHOLD) / n_sims * 100
+    actual_final = sum(t["pnl"] for t in trades) + start_balance
+
+    W = 72
+    print()
+    print("=" * W)
+    print(f"  MONTE CARLO  ({n_sims:,} simulations | {n} trades reshuffled with anti-martingale)")
+    print("=" * W)
+    print(f"  Actual final balance : ${actual_final:,.2f}")
+    print(f"  Profitable runs      : {profitable:.1f}%")
+    print(f"  Busted runs (<$0.50) : {busted:.1f}%")
+    print()
+    print(f"  Final Balance distribution:")
+    for pct, label in [(5, "5th "), (25, "25th"), (50, "50th (median)"),
+                       (75, "75th"), (95, "95th")]:
+        idx = min(int(n_sims * pct / 100), n_sims - 1)
+        print(f"    {label} pctile : ${final_balances[idx]:>12,.2f}")
+    print()
+    print(f"  Max Drawdown distribution:")
+    for pct, label in [(5, "5th "), (50, "50th (median)"), (95, "95th")]:
+        idx = min(int(n_sims * pct / 100), n_sims - 1)
+        print(f"    {label} pctile : {max_dds[idx]:.1f}%")
+    print("=" * W)
 
 
 # ─── Summary printer ─────────────────────────────────────────────────────────
@@ -747,6 +852,8 @@ def main():
     p.add_argument("--fixed-lot",  type=float, help="Use a fixed lot size (e.g. 0.01) — bypasses anti-martingale compounding. Shows pure signal quality P&L.")
     p.add_argument("--walk-forward", action="store_true",
                    help="Split period in half and run each separately — checks if gains are regime-specific.")
+    p.add_argument("--monte-carlo", action="store_true",
+                   help="Run 2000-iteration Monte Carlo on shuffled trade P&L after backtest.")
     a = p.parse_args()
 
     # Load data
@@ -818,6 +925,9 @@ def main():
         res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
                            start_bar, end_bar, fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
         df_results = _print_summary(res, a.balance, trading_days)
+
+        if getattr(a, "monte_carlo", False):
+            run_monte_carlo(res["trades"], a.balance)
 
         if a.save_csv and df_results is not None and not df_results.empty:
             df_results.to_csv(a.save_csv)
