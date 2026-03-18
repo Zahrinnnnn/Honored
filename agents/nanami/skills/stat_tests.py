@@ -287,6 +287,50 @@ class KalmanPriceFilter:
         return filtered, velocities
 
 
+def variance_ratio(prices: np.ndarray, q: int = 8) -> float:
+    """
+    Lo-MacKinlay Variance Ratio.
+
+    VR(q) = Var(q-period log returns) / (q × Var(1-period log returns))
+    VR > 1 → positive autocorrelation → trending (momentum)
+    VR < 1 → negative autocorrelation → mean-reverting
+    VR = 1 → random walk
+
+    Returns 1.0 on insufficient data.
+    """
+    if len(prices) < 2 * q + 1:
+        return 1.0
+    log_px = np.log(np.maximum(prices, 1e-12))
+    r1 = np.diff(log_px)
+    var_1 = np.var(r1, ddof=1)
+    if var_1 < 1e-12:
+        return 1.0
+    rq = log_px[q:] - log_px[:-q]
+    var_q = np.var(rq, ddof=1)
+    return float(var_q / (q * var_1))
+
+
+def realized_vol_acceleration(prices: np.ndarray, short: int = 10, long: int = 40) -> float:
+    """
+    Ratio of short-window to long-window realized volatility.
+
+    RVA > 1 → short-term vol > long-term vol → move still accelerating
+    RVA < 1 → vol decelerating → trend exhausting
+
+    Returns 1.0 on insufficient data.
+    """
+    if len(prices) < long + 1:
+        return 1.0
+    r = np.diff(np.log(np.maximum(prices, 1e-12)))
+    if len(r) < long:
+        return 1.0
+    short_rv = float(np.std(r[-short:], ddof=1)) if len(r) >= short else 0.0
+    long_rv  = float(np.std(r[-long:],  ddof=1))
+    if long_rv < 1e-12:
+        return 1.0
+    return short_rv / long_rv
+
+
 def kalman_velocity(
     prices: np.ndarray,
     q_scale: float = MODEL_A_KALMAN_Q_SCALE,

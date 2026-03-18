@@ -88,19 +88,43 @@ def detect_regime(df_h1: pd.DataFrame) -> str:
 
 def compute_macro_bias(df_h1: pd.DataFrame) -> str:
     """
-    Returns 'BULLISH' if H1 close is above its 200-bar SMA,
+    Returns 'BULLISH' if H1 close is above its 500-bar SMA (~20 days),
     'BEARISH' if below, 'NEUTRAL' if insufficient data.
 
-    Used to gate SELL signals: only allow SELL when macro trend agrees.
+    SMA500 (~20 days) is slow enough to represent true macro trend —
+    won't flip on 1-2 week corrections the way SMA200 (8 days) does.
+    Used to gate SELL signals: only allow SELL when macro confirms bearish.
     """
-    if len(df_h1) < 200:
+    if len(df_h1) < 500:
         return "NEUTRAL"
     close = df_h1["close"].values.astype(float)
-    sma200 = np.mean(close[-200:])
-    if close[-1] > sma200:
+    sma500 = np.mean(close[-500:])
+    if close[-1] > sma500:
         return "BULLISH"
-    elif close[-1] < sma200:
+    elif close[-1] < sma500:
         return "BEARISH"
+    return "NEUTRAL"
+
+
+def compute_h4_bias(df_h4: pd.DataFrame) -> str:
+    """
+    Returns H4 trend bias: 'BULLISH', 'BEARISH', or 'NEUTRAL'.
+
+    Uses close vs 50-bar H4 SMA (~8 trading days).
+    SMA50 is slow enough that brief 1-2 week corrections in a bull market
+    don't flip it to BEARISH — only sustained multi-week downtrends do.
+
+    Used as SELL gate for BEARISH_GRIND signals: only allow SELL when
+    H4 confirms bearish trend. Blocks bad SELLs during bull-run corrections.
+    """
+    if len(df_h4) < 50:
+        return "NEUTRAL"
+    close = df_h4["close"].values.astype(float)
+    sma50 = np.mean(close[-50:])
+    if close[-1] < sma50:
+        return "BEARISH"
+    elif close[-1] > sma50:
+        return "BULLISH"
     return "NEUTRAL"
 
 

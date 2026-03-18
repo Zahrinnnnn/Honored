@@ -34,7 +34,7 @@ REGIME_BEARISH_PANIC   = "BEARISH_PANIC"    # Z<-1, ATRP>75: freefall
 REGIME_TIGHT_RANGE     = "TIGHT_RANGE"      # |Z|≤1, ATRP≤75: compression
 REGIME_TOXIC_CHOP      = "TOXIC_CHOP"       # |Z|≤1, ATRP>75: whipsaw
 
-NO_TRADE_REGIMES  = {REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC, REGIME_TOXIC_CHOP}
+NO_TRADE_REGIMES  = {REGIME_TOXIC_CHOP, REGIME_TIGHT_RANGE}  # BLOWOFF/PANIC traded by Model B
 
 REGIME_Z_SCORE_WINDOW            = 50    # rolling mean/std window on H1 typical price
 REGIME_Z_SCORE_THRESHOLD         = 1.0   # |Z| > 1.0 → directional
@@ -70,7 +70,9 @@ OU_MAX_HALF_LIFE          = 50    # bars
 OU_LOOKBACK               = 80    # bars for OU window (EMA50 detrend)
 OU_LOOKBACK_MID           = 60    # mid detrend window (EMA34 residuals)
 OU_LOOKBACK_SHORT         = 40    # short detrend window (EMA21 residuals)
-OU_ZSCORE_EMA34_THRESHOLD = 1.0   # Model A EMA34 z-score (between EMA50=0.9 and EMA21=1.3)
+OU_ZSCORE_EMA34_THRESHOLD  = 1.0   # Model A EMA34 z-score (between EMA50=0.9 and EMA21=1.3)
+OU_ZSCORE_BLOWOFF_THRESHOLD = 0.6  # shallower dip entry in blowoff (strong macro momentum)
+OU_MAX_HALF_LIFE_BLOWOFF    = 25   # tighter half-life cap — blowoff dips snap back fast
 OU_TIME_KILL_HALF_LIFE_MULT = 2   # close after 2 × half_life_bars M5 bars
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
@@ -84,13 +86,16 @@ NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 # Model name constants
 # ─────────────────────────────────────────────────────────────────────────────
 MODEL_A = "OU_GRIND"
+MODEL_B = "OU_LONDON"   # Same OU engine as Model A, London Open session only
 
 MODEL_SESSION_LIMITS = {
-    MODEL_A: M5_MAX_TRADES_PER_SESSION,
+    MODEL_A: M5_MAX_TRADES_PER_SESSION,   # 8 per session
+    MODEL_B: M5_MAX_TRADES_PER_SESSION,   # 8 per session
 }
 
 MODEL_SESSIONS = {
-    MODEL_A: ["NY_OVERLAP"],  # LONDON_OPEN (36% WR) + NY_CLOSE (inconsistent) disabled
+    MODEL_A: ["NY_OVERLAP"],
+    MODEL_B: ["LONDON_OPEN"],
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -33,18 +33,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agents.nanami.skills.indicator_engine import add_indicators
-from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_macro_bias
-from agents.nanami.skills.ou_grind import generate_signal as _model_a
+from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_macro_bias, compute_h4_bias
+from agents.nanami.skills.ou_grind import generate_signal as _ou_signal
 from agents.toji.skills.lot_calculator import calculate_lot
 from agents.toji.skills.trade_monitor import calculate_pnl
 from core.constants import (
-    MODEL_A,
+    MODEL_A, MODEL_B,
     BREAKEVEN_ATR_THRESHOLD,
     NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     OU_TIME_KILL_HALF_LIFE_MULT,
     TIME_KILL_MINUTES, MAX_TRADE_DURATION_MINUTES,
     XAUUSD_POINT_VALUE,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
+    REGIME_BULLISH_BLOWOFF,
     REGIME_H1_BARS_NEEDED,
     REGIME_PERSISTENCE_BARS,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
@@ -62,6 +63,7 @@ _ATR_VOLATILE_PCTILE = 80  # ATR percentile threshold for "volatile" spread/slip
 _WARMUP_M5 = 260
 BUST_THRESHOLD = 0.50  # refill when balance drops below this
 MAX_SIMULTANEOUS_TRADES = 4  # max open trades at once — prevents correlated cluster blowup
+DAILY_LOSS_LIMIT_PCT = 0.15  # stop new signals if today's loss exceeds 15% of day-open balance
 
 _WINDOWS = {
     "LONDON_BREAKOUT": (time(7,  0), time(7, 30)),
@@ -75,8 +77,9 @@ _BLACKOUT_END   = time(7,  0)
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
     MODEL_A: {"NY_OVERLAP"},
+    MODEL_B: {"NY_OVERLAP", "LONDON_OPEN"},
 }
-_SESSION_LIMIT = {MODEL_A: 8}
+_SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 8}
 
 
 # ─── Session helpers ──────────────────────────────────────────────────────────
@@ -163,6 +166,37 @@ def _precompute_regime(df_h1: pd.DataFrame, df_m5: pd.DataFrame) -> dict:
     return regime_map
 
 
+# ─── H4 bias precomputation ────────────────────────────────────────────────
+
+def _precompute_h4_bias(df_h4: pd.DataFrame, df_m5: pd.DataFrame) -> dict:
+    """
+    Compute H4 bias (BULLISH/BEARISH/NEUTRAL) for each M5 bar via searchsorted.
+
+    Each M5 bar is mapped to the last closed H4 bar before it. H4 SMA20 is
+    computed on a 20-bar rolling window — ~3.3 trading days. Slow enough that
+    brief H1 corrections don't flip it; genuine multi-day downtrends do.
+    """
+    h4_times = df_h4.index
+    n_h4 = len(df_h4)
+    _H4_LOOKBACK = 50
+
+    # Compute bias per H4 bar
+    h4_biases = {}
+    for i in range(_H4_LOOKBACK, n_h4):
+        h4_window = df_h4.iloc[i - _H4_LOOKBACK + 1 : i + 1]
+        h4_biases[i] = compute_h4_bias(h4_window)
+
+    # Map each M5 bar to its H4 bar
+    m5_times = df_m5.index
+    bias_map = {}
+    for i in range(len(m5_times)):
+        m5_t  = m5_times[i]
+        h4_idx = int(h4_times.searchsorted(m5_t, side="right")) - 1
+        bias_map[i] = h4_biases.get(h4_idx, "NEUTRAL")
+
+    return bias_map
+
+
 # ─── Validation ──────────────────────────────────────────────────────────────
 
 def _validate(signal, state, session, is_breakout, bar_dt, regime,
@@ -188,16 +222,17 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
 
     direction = signal.get("direction", "")
 
-    # Regime directional gate (Model A)
-    if direction == "BUY" and regime != REGIME_BULLISH_GRIND:
-        return False, "regime_blocked"
-    if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
-        return False, "regime_blocked"
+    # Regime directional gate — same rules for both Model A (NY) and Model B (London)
+    if model in (MODEL_A, MODEL_B):
+        if direction == "BUY" and regime not in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF):
+            return False, "regime_blocked"
+        if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
+            return False, "regime_blocked"
 
     # Session checks
     if is_breakout:
         return False, "wrong_session"
-    if session not in _MODEL_SESSIONS[MODEL_A]:
+    if session not in _MODEL_SESSIONS.get(model, set()):
         return False, "wrong_session"
 
     # Session limit
@@ -366,21 +401,35 @@ def _try_exit_rr(trade, bar, bar_dt):
 
 # ─── Signal generation ───────────────────────────────────────────────────────
 
-def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias="NEUTRAL"):
-    """Generate Model A signal for this bar if conditions are met."""
-    if is_breakout or session not in _MODEL_SESSIONS[MODEL_A]:
+def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
+                               macro_bias="NEUTRAL", h4_bias="NEUTRAL"):
+    """Generate Model A (NY_OVERLAP) signals for this bar."""
+    if is_breakout:
         return []
-    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
-        return []
-    sig = _model_a(df_m5_win, session, regime, macro_bias=macro_bias)
-    return [sig] if sig else []
+    sigs = []
+
+    _allowed_regimes = (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF)
+
+    # Model A — OU grind, NY_OVERLAP only
+    if session in _MODEL_SESSIONS[MODEL_A] and regime in _allowed_regimes:
+        sig = _ou_signal(df_m5_win, session, regime, macro_bias=macro_bias)
+        if sig:
+            # H4 bias SELL gate: only allow SELL in BEARISH_GRIND when H4 confirms bearish.
+            # Blocks bad SELLs during brief corrections in bull markets (H4 still BULLISH).
+            # Keeps good SELLs during genuine multi-day downtrends (H4 flips BEARISH).
+            if sig["direction"] == "SELL" and h4_bias != "BEARISH":
+                pass  # H4 not confirming — skip
+            else:
+                sigs.append(sig)
+
+    return sigs
 
 
 # ─── Core backtest engine ────────────────────────────────────────────────────
 
 def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
                  start_bar: int, end_bar: int, models_to_run=None,
-                 fixed_lot: float = None) -> dict:
+                 fixed_lot: float = None, h4_bias_map: dict = None) -> dict:
     """
     Run backtest with Model A.
 
@@ -405,6 +454,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         "all_trades":             [],
         "refill_count":           0,
         "structural_break_until": None,
+        "day_start_balance":      balance,
     }
 
     prev_date   = None
@@ -424,6 +474,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
                 state["soft_halt"]          = False
                 state["emergency_halt"]     = False
                 state["consecutive_losses"] = 0
+            state["day_start_balance"] = state["balance"]  # reset daily loss tracking
             prev_date = today
 
         # Check exits on open trades
@@ -444,6 +495,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         rm = regime_map.get(i, _default_rm)
         regime = rm["regime"]
         macro_bias = rm.get("macro_bias", "NEUTRAL")
+        h4_bias = h4_bias_map.get(i, "NEUTRAL") if h4_bias_map else "NEUTRAL"
 
         # Structural break cooldown
         if rm["structural_break"]:
@@ -458,7 +510,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
             continue
 
         # Generate signals
-        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias)
+        sigs = _generate_signals_for_bar(df_m5_win, session, is_breakout, regime, macro_bias, h4_bias)
 
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
@@ -685,6 +737,7 @@ def main():
     p = argparse.ArgumentParser(description="HONORED backtest — Model A (OU_GRIND).")
     p.add_argument("--m5",      default="data/XAUUSD_M5.csv")
     p.add_argument("--h1",      default="data/XAUUSD_H1.csv")
+    p.add_argument("--h4",      default="data/XAUUSD_H4_2yr.csv")
     p.add_argument("--balance", type=float, default=20.0)
     p.add_argument("--days",       type=int,   help="Run backtest for the last N days only.")
     p.add_argument("--start-date", help="Start date filter YYYY-MM-DD (inclusive).")
@@ -698,6 +751,7 @@ def main():
     # Load data
     df_m5 = _load_csv(a.m5, "M5")
     df_h1 = _load_csv(a.h1, "H1")
+    df_h4 = _load_csv(a.h4, "H4")
     total_bars = len(df_m5)
 
     if total_bars < _WARMUP_M5 + 50:
@@ -709,6 +763,8 @@ def main():
 
     print("Precomputing 6-state regime for each M5 bar ...")
     regime_map = _precompute_regime(df_h1, df_m5_ind)
+    print("Precomputing H4 bias for each M5 bar ...")
+    h4_bias_map = _precompute_h4_bias(df_h4, df_m5_ind)
     print("Done.\n")
 
     # Determine start/end bar
@@ -750,7 +806,7 @@ def main():
             print(f"{'─' * 50}")
             tdays = _count_trading_days(df_m5.iloc[hstart:hend])
             res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
-                               hstart, hend, fixed_lot=fixed_lot)
+                               hstart, hend, fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
             _print_summary(res, a.balance, tdays)
     else:
         # ── Standard full-period run ──────────────────────────────────────────
@@ -759,7 +815,7 @@ def main():
         print(f"{'─' * 50}")
         trading_days = _count_trading_days(df_m5.iloc[start_bar:end_bar])
         res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
-                           start_bar, end_bar, fixed_lot=fixed_lot)
+                           start_bar, end_bar, fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
         df_results = _print_summary(res, a.balance, trading_days)
 
         if a.save_csv and df_results is not None and not df_results.empty:

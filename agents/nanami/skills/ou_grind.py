@@ -40,14 +40,17 @@ from core.constants import (
     OU_LOOKBACK_MID,
     OU_LOOKBACK_SHORT,
     OU_MAX_HALF_LIFE,
+    OU_MAX_HALF_LIFE_BLOWOFF,
     OU_MIN_HALF_LIFE,
     OU_SL_ATR_MULT,
     OU_SL_MAX,
     OU_SL_MIN,
+    OU_ZSCORE_BLOWOFF_THRESHOLD,
     OU_ZSCORE_EMA34_THRESHOLD,
     OU_ZSCORE_ENTRY_THRESHOLD,
     OU_ZSCORE_GRIND_THRESHOLD,
     REGIME_BEARISH_GRIND,
+    REGIME_BULLISH_BLOWOFF,
     REGIME_BULLISH_GRIND,
     RR_RATIO,
 )
@@ -56,10 +59,14 @@ from core.constants import (
 _ATR_SPIKE_MULT = 1.8
 # Bars of ATR history to use as baseline
 _ATR_BASELINE_BARS = 60
+# BLOWOFF parabola gate: EMA50 slope / ATR per bar — blocks if trending too fast for OU
+_BLOWOFF_EMA_SLOPE_BARS = 60   # 5-hour lookback for slope measurement
+_BLOWOFF_EMA_SLOPE_THRESH = 0.06  # EMA50 moving > 6% of ATR per bar = parabolic
 
 
 def _try_ou(closes: np.ndarray, ema_arr: np.ndarray, lookback: int,
             regime: str, z_threshold: float = OU_ZSCORE_GRIND_THRESHOLD,
+            max_half_life: int = OU_MAX_HALF_LIFE,
             ) -> Optional[tuple]:
     """
     Run the OU pipeline on detrended residuals.
@@ -85,12 +92,12 @@ def _try_ou(closes: np.ndarray, ema_arr: np.ndarray, lookback: int,
         return None
 
     half_life = ou_params["half_life_bars"]
-    if half_life < OU_MIN_HALF_LIFE or half_life > OU_MAX_HALF_LIFE:
+    if half_life < OU_MIN_HALF_LIFE or half_life > max_half_life:
         return None
 
     z = ou_zscore(residuals[-1], ou_params)
 
-    if regime == REGIME_BULLISH_GRIND and z < -z_threshold:
+    if regime in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF) and z < -z_threshold:
         return ("BUY", z, ou_params, half_life)
     elif regime == REGIME_BEARISH_GRIND and z > z_threshold:
         return ("SELL", z, ou_params, half_life)
@@ -111,7 +118,7 @@ def generate_signal(
     for higher signal frequency.
     """
     # Gate 1: regime
-    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
+    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
         return None
 
     # Gate 2: data length
@@ -134,11 +141,34 @@ def generate_signal(
             return None  # volatility spike — OU won't work
 
     # Gate 5: Hurst filter — block when price is trending, not mean-reverting
-    if len(closes) >= 200:
+    # Skip for BLOWOFF: blowoff IS a trending regime; Hurst naturally > 0.53 there
+    if regime != REGIME_BULLISH_BLOWOFF and len(closes) >= 200:
         hurst = rolling_hurst(closes)
         if hurst > HURST_TRENDING_THRESHOLD:
             return None  # trending environment — OU won't work
 
+    # ── BLOWOFF mode: BUY only, shallower z=0.6, tighter half-life cap ──────
+    if regime == REGIME_BULLISH_BLOWOFF:
+        ema50_col = df_m5.get("ema50")
+        if ema50_col is not None and not pd.isna(last_bar.get("ema50", float("nan"))):
+            ema50_arr = ema50_col.values.astype(float)
+
+            # Parabola gate: block if EMA50 is trending too fast for OU to work
+            # Measures EMA50 velocity over last 5h relative to bar ATR.
+            # In healthy blowoff: ratio ~0.016. In parabola: ratio >0.03.
+            if len(ema50_arr) >= _BLOWOFF_EMA_SLOPE_BARS + 1 and atr > 0:
+                ema_slope = abs(ema50_arr[-1] - ema50_arr[-_BLOWOFF_EMA_SLOPE_BARS]) / _BLOWOFF_EMA_SLOPE_BARS
+                if ema_slope / atr > _BLOWOFF_EMA_SLOPE_THRESH:
+                    return None  # EMA50 trending too fast — parabolic, OU mean won't hold
+
+            result = _try_ou(closes, ema50_arr, OU_LOOKBACK, regime,
+                             z_threshold=OU_ZSCORE_BLOWOFF_THRESHOLD,
+                             max_half_life=OU_MAX_HALF_LIFE_BLOWOFF)
+            if result:
+                return _build_signal(result, df_m5, atr, session, regime, "ema50_blowoff")
+        return None  # blowoff: EMA50 only, no fallback
+
+    # ── GRIND mode: EMA50 primary, EMA21 fallback ─────────────────────────
     # EMA50 detrend (primary — z=1.0)
     ema50_col = df_m5.get("ema50")
     if ema50_col is not None and not pd.isna(last_bar.get("ema50", float("nan"))):
@@ -146,12 +176,7 @@ def generate_signal(
         result = _try_ou(closes, ema50_arr, OU_LOOKBACK, regime,
                          z_threshold=OU_ZSCORE_GRIND_THRESHOLD)
         if result:
-            direction = result[0]
-            # Macro bias gate: block SELL when macro trend is BULLISH (correction ≠ grind)
-            if macro_bias == "BULLISH" and direction == "SELL":
-                pass
-            else:
-                return _build_signal(result, df_m5, atr, session, regime, "ema50")
+            return _build_signal(result, df_m5, atr, session, regime, "ema50")
 
     # EMA21 detrend (fallback — stricter z=1.3, shorter window)
     ema21_col = df_m5.get("ema21")
@@ -161,11 +186,7 @@ def generate_signal(
             result = _try_ou(closes, ema21_arr, OU_LOOKBACK_SHORT, regime,
                              z_threshold=OU_ZSCORE_ENTRY_THRESHOLD)
             if result:
-                direction = result[0]
-                if macro_bias == "BULLISH" and direction == "SELL":
-                    pass
-                else:
-                    return _build_signal(result, df_m5, atr, session, regime, "ema21")
+                return _build_signal(result, df_m5, atr, session, regime, "ema21")
 
     return None
 

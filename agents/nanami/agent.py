@@ -34,12 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
 from core.constants import (  # noqa: E402
-    MODEL_A,
+    MODEL_A, MODEL_B,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
     NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     REGIME_H1_BARS_NEEDED,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND,
+    REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC,
     NO_TRADE_REGIMES,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
 )
@@ -51,6 +52,7 @@ from agents.nanami.skills import (  # noqa: E402
     indicator_engine,
     session_detector,
     ou_grind,
+    momentum_blowoff,
 )
 from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
@@ -184,6 +186,10 @@ async def _poll(state: StateManager):
             else:
                 signal = await _try_model_a(state, df_m5, session, regime, macro_bias)
 
+    elif regime in (REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
+        if session in MODEL_SESSIONS[MODEL_B]:
+            signal = await _try_model_b(state, df_m5, session, regime)
+
     # ── 10. Persist signal ───────────────────────────────────────────────
     if signal:
         signal["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -202,6 +208,18 @@ async def _poll(state: StateManager):
 # ---------------------------------------------------------------------------
 # Per-model helpers
 # ---------------------------------------------------------------------------
+
+async def _try_model_b(state: StateManager, df_m5, session: str, regime: str):
+    """Check session limit, run Model B (momentum blowoff)."""
+    count = await state.get_session_trade_count(session, MODEL_B)
+    if count >= MODEL_SESSION_LIMITS[MODEL_B]:
+        logger.debug(
+            "Model B session limit reached (%d/%d) for %s",
+            count, MODEL_SESSION_LIMITS[MODEL_B], session,
+        )
+        return None
+    return momentum_blowoff.generate_signal(df_m5, session, regime)
+
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, macro_bias: str = "NEUTRAL"):
     """Check session limit, run Model A (OU grind)."""
