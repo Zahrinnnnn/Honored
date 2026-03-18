@@ -41,6 +41,7 @@ from core.constants import (
     NEWS_BLACKOUT_MINUTES,
     REGIME_BULLISH_GRIND,
     REGIME_BEARISH_GRIND,
+    REGIME_BULLISH_BLOWOFF,
 )
 from core.state_manager import StateManager
 from agents.geto.skills.account_monitor import get_account_snapshot
@@ -90,7 +91,7 @@ def _regime_and_bias_ok(
     Returns True if the regime + H4 bias allows this trade direction.
 
     Model A (OU Grind):
-        BUY  → regime == BULLISH_GRIND AND h4_bias != BEARISH
+        BUY  → regime in {BULLISH_GRIND, BULLISH_BLOWOFF} AND h4_bias != BEARISH
         SELL → regime == BEARISH_GRIND AND h4_bias != BULLISH
 
     Model B (London Reversal):
@@ -100,7 +101,7 @@ def _regime_and_bias_ok(
     """
     if model == MODEL_A:
         if direction == "BUY":
-            return regime == REGIME_BULLISH_GRIND and h4_bias != "BEARISH"
+            return regime in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF) and h4_bias != "BEARISH"
         if direction == "SELL":
             return regime == REGIME_BEARISH_GRIND and h4_bias != "BULLISH"
         return False

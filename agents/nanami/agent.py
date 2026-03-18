@@ -179,8 +179,8 @@ async def _poll(state: StateManager):
     if session in MODEL_SESSIONS[MODEL_B]:
         signal = await _try_model_b(state, df_m5, session, macro_bias)
 
-    # ── Model A: OU grind — GRIND regimes only, NY_OVERLAP, no dead zone ────
-    if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
+    # ── Model A: OU grind — GRIND + BULLISH_BLOWOFF, NY_OVERLAP, no dead zone ─
+    if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
         if session in MODEL_SESSIONS[MODEL_A]:
             utc_hour = datetime.now(timezone.utc).hour
             if NY_OVERLAP_DEAD_HOUR_START <= utc_hour < NY_OVERLAP_DEAD_HOUR_END:
