@@ -83,7 +83,7 @@ _BLACKOUT_END   = time(7,  0)
 
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
-    MODEL_A: {"NY_OVERLAP"},
+    MODEL_A: {"NY_OVERLAP", "NY_CLOSE"},   # opt 1: add NY_CLOSE session
     MODEL_B: {"LONDON_OPEN"},
 }
 _SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 2}   # max 2 London trades per day total
@@ -535,8 +535,11 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
 
         df_m5_win = df_m5_ind.iloc[max(0, i - 500) : i + 1]
 
-        # Dead zone: block Model A during 14:00-15:00 UTC (US midday doldrums)
-        if session == "NY_OVERLAP" and NY_OVERLAP_DEAD_HOUR_START <= dt.hour < NY_OVERLAP_DEAD_HOUR_END:
+        # Dead zone removed (opt 2) — 14:00-15:00 UTC now open for Model A
+
+        # Fix A — NY_CLOSE entry cutoff: block signals after 20:00 UTC
+        # Ensures every trade has ≥ 60 min before blackout at 21:00.
+        if session == "NY_CLOSE" and dt.hour >= 20:
             continue
 
         # Generate signals
