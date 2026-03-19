@@ -11,7 +11,7 @@ asyncio process. Responsibilities:
   5. Update shared session_info in SQLite (session, regime, spread,
      news timing) — GETO reads these.
   6. Apply per-model session trade limits before generating any signal.
-  7. Dispatch Model A in BULLISH_GRIND / BEARISH_GRIND regimes (NY_OVERLAP only).
+  7. Dispatch Model A in BULLISH_GRIND / BEARISH_GRIND regimes (NY_OVERLAP + NY_CLOSE).
   8. Write signals to trading_state.last_signal for GETO to validate.
 
 Poll cadence:
@@ -37,7 +37,6 @@ from core.constants import (  # noqa: E402
     MODEL_A, MODEL_B,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
-    NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     REGIME_H1_BARS_NEEDED,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND,
     REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC,
@@ -179,12 +178,13 @@ async def _poll(state: StateManager):
     if session in MODEL_SESSIONS[MODEL_B]:
         signal = await _try_model_b(state, df_m5, session, macro_bias)
 
-    # ── Model A: OU grind — GRIND + BULLISH_BLOWOFF, NY_OVERLAP, no dead zone ─
+    # ── Model A: OU grind — GRIND + BULLISH_BLOWOFF, NY_OVERLAP + NY_CLOSE ──────
     if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
         if session in MODEL_SESSIONS[MODEL_A]:
             utc_hour = datetime.now(timezone.utc).hour
-            if NY_OVERLAP_DEAD_HOUR_START <= utc_hour < NY_OVERLAP_DEAD_HOUR_END:
-                logger.debug("Dead zone (%d:00 UTC) — skipping Model A signal", utc_hour)
+            # NY_CLOSE entry cutoff: block after 20:00 UTC — ensures ≥60 min before blackout
+            if session == "NY_CLOSE" and utc_hour >= 20:
+                logger.debug("NY_CLOSE entry cutoff (20:00 UTC) — skipping Model A signal")
             else:
                 signal = await _try_model_a(state, df_m5, session, regime, macro_bias)
 

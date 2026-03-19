@@ -96,7 +96,7 @@ MODEL_SESSION_LIMITS = {
 }
 
 MODEL_SESSIONS = {
-    MODEL_A: ["NY_OVERLAP"],
+    MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],   # NY_CLOSE capped at 20:00 UTC entry cutoff
     MODEL_B: ["LONDON_OPEN"],
 }
 
