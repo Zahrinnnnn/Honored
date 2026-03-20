@@ -197,8 +197,8 @@ async def _poll_alerts(ctx: ContextTypes.DEFAULT_TYPE):
         async with StateManager() as s:
             alerts = await s.get_pending_alerts()
             for alert in alerts:
-                text = f"*{alert['alert_type']}*\n{alert['message']}"
-                await ctx.bot.send_message(CHAT_ID, text, parse_mode="Markdown")
+                text = f"[{alert['alert_type']}]\n{alert['message']}"
+                await ctx.bot.send_message(CHAT_ID, text)
                 await s.mark_alert_sent(alert["id"])
     except Exception:
         logger.exception("Alert poll failed")
