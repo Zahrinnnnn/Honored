@@ -56,6 +56,7 @@ from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
     check_structural_break,
     compute_macro_bias,
+    compute_h4_bias,
 )
 
 # ---------------------------------------------------------------------------
@@ -130,12 +131,14 @@ async def _poll(state: StateManager):
 
     df_m5 = indicator_engine.add_indicators(df_m5)
 
-    # ── 3. Fetch H1 (200 bars for regime) ───────────────────────────────
+    # ── 3. Fetch H1 (200 bars for regime) + H4 (50 bars for bias gate) ──
     df_h1 = await market_data.get_candles("1h", count=REGIME_H1_BARS_NEEDED)
+    df_h4 = await market_data.get_candles("4h", count=60)
 
     # ── 4. Detect 6-state regime from H1 ────────────────────────────────
     regime = detect_regime(df_h1)
     macro_bias = compute_macro_bias(df_h1)
+    h4_bias = compute_h4_bias(df_h4)
     await state.set_session_info("current_regime", regime)
     await state.set_session_info("macro_bias", macro_bias)
 
@@ -175,7 +178,7 @@ async def _poll(state: StateManager):
 
     # ── Model B: London reversal — fires in LONDON_OPEN regardless of regime ─
     if session in MODEL_SESSIONS[MODEL_B]:
-        signal = await _try_model_b(state, df_m5, session, macro_bias)
+        signal = await _try_model_b(state, df_m5, session, h4_bias)
 
     # ── Model A: OU grind — GRIND + BLOWOFF + PANIC, NY sessions ────────────
     if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
@@ -185,7 +188,7 @@ async def _poll(state: StateManager):
             if session == "NY_CLOSE" and utc_hour >= 20:
                 logger.debug("NY_CLOSE entry cutoff (20:00 UTC) — skipping Model A signal")
             else:
-                signal = await _try_model_a(state, df_m5, session, regime, macro_bias)
+                signal = await _try_model_a(state, df_m5, session, regime, h4_bias)
 
     if regime in NO_TRADE_REGIMES and signal is None:
         logger.info("Regime=%s — no trading allowed", regime)
@@ -209,7 +212,7 @@ async def _poll(state: StateManager):
 # Per-model helpers
 # ---------------------------------------------------------------------------
 
-async def _try_model_b(state: StateManager, df_m5, session: str, macro_bias: str = "NEUTRAL"):
+async def _try_model_b(state: StateManager, df_m5, session: str, h4_bias: str = "NEUTRAL"):
     """Check session limit, run Model B (London reversal)."""
     count = await state.get_session_trade_count(session, MODEL_B)
     if count >= MODEL_SESSION_LIMITS[MODEL_B]:
@@ -218,10 +221,10 @@ async def _try_model_b(state: StateManager, df_m5, session: str, macro_bias: str
             count, MODEL_SESSION_LIMITS[MODEL_B], session,
         )
         return None
-    return london_reversal_signal(df_m5, session, h4_bias=macro_bias)
+    return london_reversal_signal(df_m5, session, h4_bias=h4_bias)
 
 
-async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, macro_bias: str = "NEUTRAL"):
+async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, h4_bias: str = "NEUTRAL"):
     """Check session limit, run Model A (OU grind) with H4 bias gate."""
     count = await state.get_session_trade_count(session, MODEL_A)
     if count >= MODEL_SESSION_LIMITS[MODEL_A]:
@@ -231,15 +234,15 @@ async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, ma
         )
         return None
 
-    signal = ou_grind.generate_signal(df_m5, session, regime, macro_bias=macro_bias)
+    signal = ou_grind.generate_signal(df_m5, session, regime, macro_bias=h4_bias)
     if signal is None:
         return None
 
-    # H4 bias gate: only trade with the macro trend
-    if signal["direction"] == "BUY" and macro_bias == "BEARISH":
+    # H4 bias gate: only trade with the H4 trend
+    if signal["direction"] == "BUY" and h4_bias == "BEARISH":
         logger.debug("Model A BUY blocked — H4 bias is BEARISH")
         return None
-    if signal["direction"] == "SELL" and macro_bias == "BULLISH":
+    if signal["direction"] == "SELL" and h4_bias == "BULLISH":
         logger.debug("Model A SELL blocked — H4 bias is BULLISH")
         return None
 
