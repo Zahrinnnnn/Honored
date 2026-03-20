@@ -51,18 +51,18 @@ _ASIAN_END_HOUR      = 7
 _MIN_ASIAN_BARS      = 12
 _MIN_ASIAN_RANGE     = 3.0       # $3 minimum overnight range
 
-_MIN_ENTRY_HOUR      = 8         # block 07:xx entries — stop hunt in progress, reversal unconfirmed
+_MIN_ENTRY_HOUR      = 7         # allow from 07:30 UTC onward
 _MIN_SCORE           = 3         # Kalman flip (2pts) + any 1 confirmation (1pt)
 _KALMAN_LOOKBACK     = 5         # bars to look back for velocity flip
 _CONSEC_MIN          = 3         # minimum consecutive bars for exhaustion signal
 _CUSUM_WINDOW        = 20        # bars for CUSUM accumulation
-_CUSUM_ATR_MULT      = 1.5       # CUSUM must exceed N×ATR to count as significant sweep
+_CUSUM_ATR_MULT      = 1.0       # CUSUM must exceed N×ATR to count as significant sweep
 _CUSUM_REVERSAL_BARS = 2         # last N bars must oppose CUSUM direction
-_VOL_CLIMAX_MULT     = 2.5       # volume must exceed N× 20-bar average
+_VOL_CLIMAX_MULT     = 1.5       # volume must exceed N× 20-bar average
 _VOL_BODY_RATIO      = 0.35      # |close-open|/(high-low) < threshold = small body (absorption)
 _ATR_SPIKE_MULT      = 1.8
 _ATR_BASELINE_BARS   = 60
-_MIN_BREAKOUT_DIST   = 0.3       # price must have broken $0.30 outside Asian range
+_MIN_BREAKOUT_DIST   = 0.30      # price must have broken $0.30 outside Asian range
 _SL_MIN              = 6.0
 _SL_MAX              = 12.0
 

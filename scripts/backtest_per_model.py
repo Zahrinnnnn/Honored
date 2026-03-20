@@ -50,6 +50,7 @@ from core.constants import (
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
     RR_RATIO,
     ACCOUNT_TYPE,
+    MAX_CONSECUTIVE_LOSSES,
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -321,7 +322,7 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
         state["soft_halt"] = False
     else:
         state["consecutive_losses"] += 1
-        if state["consecutive_losses"] >= 3:
+        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
             state["soft_halt"] = True
 
     state["all_trades"].append({
