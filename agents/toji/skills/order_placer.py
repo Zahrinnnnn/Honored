@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PAPER_MODE = os.environ.get("PAPER_MODE", "true").lower() == "true"
-_SYMBOL = "XAUUSD"
+from core.constants import SYMBOL as _SYMBOL
 
 logger = logging.getLogger(__name__)
 

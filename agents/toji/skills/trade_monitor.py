@@ -34,7 +34,7 @@ from core.constants import (
 
 logger = logging.getLogger(__name__)
 
-_SYMBOL = "XAUUSD"
+from core.constants import SYMBOL as _SYMBOL
 
 
 # ─────────────────────────────────────────────────────────────────────────────

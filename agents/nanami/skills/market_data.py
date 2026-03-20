@@ -20,10 +20,11 @@ from typing import Tuple
 import pandas as pd
 
 from core.metaapi_client import get_account, get_connection
+from core.constants import SYMBOL
 
 logger = logging.getLogger(__name__)
 
-SYMBOL = "XAUUSD"
+SYMBOL = SYMBOL  # from core.constants: "XAUUSDc" for CENTS, "XAUUSD" for STANDARD
 
 # Minimum candle counts per timeframe (to satisfy indicator warm-up)
 _MIN_CANDLES = {

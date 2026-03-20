@@ -10,6 +10,9 @@ ACCOUNT_TYPE       = os.getenv("ACCOUNT_TYPE", "CENTS").upper()
 # CENTS:    balance in USC, 1 lot = 100 USC/pt → POINT_VALUE = 100 (same)
 XAUUSD_POINT_VALUE = 100
 
+# HFM CENTS accounts use "XAUUSDc" symbol; STANDARD uses "XAUUSD"
+SYMBOL = "XAUUSDc" if ACCOUNT_TYPE == "CENTS" else "XAUUSD"
+
 # Risk parameters
 RISK_PER_TRADE_PCT       = 0.13
 MAX_DRAWDOWN_PCT         = 0.50
