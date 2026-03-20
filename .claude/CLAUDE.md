@@ -208,12 +208,13 @@ checks = {
 
 ---
 
-## News Calendar: Finnhub
+## News Calendar: ForexFactory
 
-Use Finnhub free tier (`https://finnhub.io/api/v1/calendar/economic`).
-- Filter by `impact = "high"` — high-impact only
-- Cache per UTC day; refresh at 00:00 GMT
-- API unreachable → `is_news_clear()` returns False (fail-safe, blocks all trades)
+Use ForexFactory free XML feed (`https://nfs.faireconomy.media/ff_calendar_thisweek.xml`). No API key required.
+- Filter by `impact = "high"` — high-impact only (NFP, CPI, FOMC, etc.)
+- Times in US Eastern → converted to UTC internally
+- Cache refreshes every 4 hours (intraday updates)
+- Feed unreachable → `is_news_clear()` returns False (fail-safe, blocks all trades)
 
 ---
 
@@ -407,7 +408,7 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 
 # News
-FINNHUB_API_KEY=      # Free at finnhub.io
+# ForexFactory XML feed — no API key required
 
 # Trading mode
 PAPER_MODE=true
