@@ -51,6 +51,7 @@ from core.constants import (
     REGIME_BEARISH_PANIC,
     REGIME_BULLISH_BLOWOFF,
     REGIME_BULLISH_GRIND,
+    REGIME_TIGHT_RANGE,
     RR_RATIO,
 )
 

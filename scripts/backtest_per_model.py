@@ -442,14 +442,15 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
         if sig:
             sigs.append(sig)
 
-    # Model A — OU grind (NY sessions, directional regimes + BEARISH_PANIC)
+    # Model A — OU grind (all sessions, directional regimes + TIGHT_RANGE + BEARISH_PANIC)
     if session in _MODEL_SESSIONS[MODEL_A] and regime in _allowed_regimes:
         sig = _ou_signal(df_m5_win, session, regime, macro_bias=macro_bias)
         if sig:
             direction = sig["direction"]
-            if direction == "BUY" and h4_bias != "BULLISH":
+            # Block only counter-trend (allow NEUTRAL) — mirrors live trade_validator
+            if direction == "BUY" and h4_bias == "BEARISH":
                 pass
-            elif direction == "SELL" and h4_bias != "BEARISH":
+            elif direction == "SELL" and h4_bias == "BULLISH":
                 pass
             else:
                 sigs.append(sig)

@@ -108,27 +108,27 @@ class TestLotCalculator:
         self.cc = cc
 
     def test_basic_lot_cents(self):
-        # balance=200 USC, sl=8, risk=20%, PV=100 → lot = 40/800 = 0.05
+        # balance=200 USC, sl=8, risk=10%, PV=100 → lot = 20/800 = 0.025 → 0.03
         # MetaApi returns balance in USC for CENTS accounts (500 USC = $5 USD)
-        assert self.lc.calculate_lot(200.0, 8.0) == 0.05
+        assert self.lc.calculate_lot(200.0, 8.0) == 0.03
 
     def test_basic_lot_standard(self, monkeypatch):
         monkeypatch.setenv("ACCOUNT_TYPE", "STANDARD")
         import importlib, core.constants as cc, agents.toji.skills.lot_calculator as lc
         importlib.reload(cc); importlib.reload(lc)
-        # lot = 40 / (8 × 100) = 0.05 (same formula, POINT_VALUE=100 for both)
-        assert lc.calculate_lot(200.0, 8.0) == 0.05
+        # lot = 20 / (8 × 100) = 0.025 → 0.03 (POINT_VALUE=100 for both)
+        assert lc.calculate_lot(200.0, 8.0) == 0.03
 
     def test_anti_martingale_1_loss(self):
-        # 0.05 / 2^1 = 0.025 → round to 0.03
-        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=1) == 0.03
+        # 0.03 / 2^1 = 0.015 → min floor 0.01
+        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=1) == 0.01
 
     def test_anti_martingale_2_losses(self):
-        # 0.05 / 2^2 = 0.0125 → round to 0.01 (min floor)
+        # 0.03 / 2^2 → min floor 0.01
         assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=2) == 0.01
 
     def test_anti_martingale_3_losses(self):
-        # 0.05 / 2^3 = 0.00625 → min floor 0.01
+        # 0.03 / 2^3 → min floor 0.01
         assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=3) == 0.01
 
     def test_min_lot_floor(self):
@@ -144,11 +144,11 @@ class TestLotCalculator:
             self.lc.calculate_lot(0.0, 8.0)
 
     def test_custom_risk_pct(self):
-        # (200 × 0.10) / (8 × 100) = 20/800 = 0.025 → round to 0.03
+        # (200 × 0.10) / (8 × 100) = 20/800 = 0.025 → 0.03
         assert self.lc.calculate_lot(200.0, 8.0, risk_pct=0.10) == 0.03
 
     def test_calculate_risk_amount(self):
-        assert self.lc.calculate_risk_amount(200.0) == 40.0  # 200 × 0.20
+        assert self.lc.calculate_risk_amount(200.0) == 20.0  # 200 × 0.10
 
     def test_lot_respects_rr_sizing(self):
         # Smaller SL → larger lot (same risk amount)

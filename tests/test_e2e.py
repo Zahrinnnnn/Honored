@@ -162,7 +162,8 @@ class TestSignalValidation:
     async def test_wrong_regime_rejected(self, state):
         from agents.geto.skills.trade_validator import validate
 
-        await _set_session_env(state, regime="TIGHT_RANGE")
+        # TOXIC_CHOP is still a no-trade regime for Model A
+        await _set_session_env(state, regime="TOXIC_CHOP")
         signal = _make_signal("OU_GRIND", "BUY", "NY_OVERLAP")
         result = await validate(signal, state, current_session="NY_OVERLAP", current_spread=1.5)
 

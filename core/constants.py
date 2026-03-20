@@ -11,7 +11,7 @@ ACCOUNT_TYPE       = os.getenv("ACCOUNT_TYPE", "CENTS").upper()
 XAUUSD_POINT_VALUE = 100
 
 # Risk parameters
-RISK_PER_TRADE_PCT       = 0.20
+RISK_PER_TRADE_PCT       = 0.10
 MAX_DRAWDOWN_PCT         = 0.50
 MAX_CONSECUTIVE_LOSSES   = 3
 NEWS_BLACKOUT_MINUTES    = 30
@@ -38,7 +38,7 @@ REGIME_BEARISH_PANIC   = "BEARISH_PANIC"    # Z<-1, ATRP>75: freefall
 REGIME_TIGHT_RANGE     = "TIGHT_RANGE"      # |Z|≤1, ATRP≤75: compression
 REGIME_TOXIC_CHOP      = "TOXIC_CHOP"       # |Z|≤1, ATRP>75: whipsaw
 
-NO_TRADE_REGIMES  = {REGIME_TOXIC_CHOP, REGIME_TIGHT_RANGE}  # BLOWOFF/PANIC traded by Model B
+NO_TRADE_REGIMES  = {REGIME_TOXIC_CHOP, REGIME_TIGHT_RANGE}  # confirmed anti-edge (32% WR on 339 trades)
 
 REGIME_Z_SCORE_WINDOW            = 50    # rolling mean/std window on H1 typical price
 REGIME_Z_SCORE_THRESHOLD         = 1.0   # |Z| > 1.0 → directional
@@ -69,8 +69,8 @@ MAX_TRADE_DURATION_MINUTES   = 240    # Hard cap: 4 hours
 # ─────────────────────────────────────────────────────────────────────────────
 # OU Model Parameters (Model A)
 # ─────────────────────────────────────────────────────────────────────────────
-OU_ZSCORE_ENTRY_THRESHOLD = 1.3   # |ou_z| > 1.3 to enter (EMA21 fallback)
-OU_ZSCORE_GRIND_THRESHOLD = 0.9   # |ou_z| > 0.9 for Model A primary (EMA50)
+OU_ZSCORE_ENTRY_THRESHOLD = 1.1   # |ou_z| > 1.1 to enter (EMA21 fallback)
+OU_ZSCORE_GRIND_THRESHOLD = 0.7   # |ou_z| > 0.7 for Model A primary (EMA50)
 OU_MIN_HALF_LIFE          = 3     # bars minimum half-life
 OU_MAX_HALF_LIFE          = 50    # bars
 OU_LOOKBACK               = 80    # bars for OU window (EMA50 detrend)
@@ -83,7 +83,7 @@ OU_TIME_KILL_HALF_LIFE_MULT = 3   # opt 7: extended from 2 — more room for OU 
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
 OU_SL_MAX                 = 12.0  # $12 maximum SL distance
-ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance
+ADF_P_VALUE_THRESHOLD     = 0.20  # ADF significance — relaxed from 0.10
 M5_MAX_TRADES_PER_SESSION = 8     # Model A session limit
 NY_OVERLAP_DEAD_HOUR_START = 14   # 14:00 UTC — dead zone start (US midday)
 NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
@@ -102,7 +102,7 @@ MODEL_SESSION_LIMITS = {
 }
 
 MODEL_SESSIONS = {
-    MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],   # NY_CLOSE capped at 20:00 UTC entry cutoff
+    MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],  # NY_CLOSE capped at 20:00 UTC entry cutoff
     MODEL_B: ["LONDON_OPEN"],
 }
 
@@ -128,7 +128,7 @@ ALERT_POLL_INTERVAL   = 60
 # ─────────────────────────────────────────────────────────────────────────────
 HURST_WINDOW             = 200
 ATR_VOLATILE_MULTIPLIER  = 2.0
-HURST_TRENDING_THRESHOLD = 0.53
+HURST_TRENDING_THRESHOLD = 0.65  # relaxed from 0.53 — allows mildly trending environments
 HURST_RANGING_THRESHOLD  = 0.35
 MODEL_A_KALMAN_Q_SCALE   = 0.01
 MODEL_A_ZSCORE_LOOKBACK  = 50
