@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
 from core.constants import (  # noqa: E402
-    MODEL_A, MODEL_B, MODEL_C, MODEL_D,
+    MODEL_A, MODEL_B,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
     REGIME_H1_BARS_NEEDED,
@@ -52,8 +52,6 @@ from agents.nanami.skills import (  # noqa: E402
     ou_grind,
 )
 from agents.nanami.skills.london_reversal import generate_signal as london_reversal_signal  # noqa: E402
-from agents.nanami.skills.kalman_trend import generate_signal as kalman_trend_signal  # noqa: E402
-from agents.nanami.skills.intraday_mom import generate_signal as intraday_mom_signal  # noqa: E402
 from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
     check_structural_break,
@@ -172,16 +170,12 @@ async def _poll(state: StateManager):
         logger.debug("Signal APPROVED and awaiting TOJI — skipping new signal generation")
         return
 
-    # ── 9. Signal generation — priority: B → C → A → D ──────────────────
+    # ── 9. Signal generation — priority: B → A ───────────────────────────────
     signal = None
 
     # ── Model B: London reversal — fires in LONDON_OPEN regardless of regime ─
     if session in MODEL_SESSIONS[MODEL_B]:
         signal = await _try_model_b(state, df_m5, session, macro_bias)
-
-    # ── Model C: Kalman trend — all sessions, Hurst > 0.55 ───────────────────
-    if signal is None and session in MODEL_SESSIONS[MODEL_C]:
-        signal = await _try_model_c(state, df_m5, session, macro_bias)
 
     # ── Model A: OU grind — GRIND + BULLISH_BLOWOFF, NY sessions ─────────────
     if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
@@ -192,10 +186,6 @@ async def _poll(state: StateManager):
                 logger.debug("NY_CLOSE entry cutoff (20:00 UTC) — skipping Model A signal")
             else:
                 signal = await _try_model_a(state, df_m5, session, regime, macro_bias)
-
-    # ── Model D: Intraday momentum — NY_OVERLAP, 14:00–16:00 UTC only ────────
-    if signal is None and session in MODEL_SESSIONS[MODEL_D]:
-        signal = await _try_model_d(state, df_m5, session, macro_bias)
 
     if regime in NO_TRADE_REGIMES and signal is None:
         logger.info("Regime=%s — no trading allowed", regime)
@@ -229,27 +219,6 @@ async def _try_model_b(state: StateManager, df_m5, session: str, macro_bias: str
         )
         return None
     return london_reversal_signal(df_m5, session, h4_bias=macro_bias)
-
-
-async def _try_model_c(state: StateManager, df_m5, session: str, h4_bias: str = "NEUTRAL"):
-    """Check session limit, run Model C (Kalman trend)."""
-    count = await state.get_session_trade_count(session, MODEL_C)
-    if count >= MODEL_SESSION_LIMITS[MODEL_C]:
-        logger.debug(
-            "Model C session limit reached (%d/%d) for %s",
-            count, MODEL_SESSION_LIMITS[MODEL_C], session,
-        )
-        return None
-    return kalman_trend_signal(df_m5, session, h4_bias=h4_bias)
-
-
-async def _try_model_d(state: StateManager, df_m5, session: str, h4_bias: str = "NEUTRAL"):
-    """Check daily limit, run Model D (intraday momentum)."""
-    count = await state.get_session_trade_count(session, MODEL_D)
-    if count >= MODEL_SESSION_LIMITS[MODEL_D]:
-        logger.debug("Model D daily limit reached (%d/%d)", count, MODEL_SESSION_LIMITS[MODEL_D])
-        return None
-    return intraday_mom_signal(df_m5, session, h4_bias=h4_bias)
 
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, macro_bias: str = "NEUTRAL"):

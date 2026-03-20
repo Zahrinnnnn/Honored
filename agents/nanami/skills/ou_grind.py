@@ -48,6 +48,7 @@ from core.constants import (
     OU_ZSCORE_ENTRY_THRESHOLD,
     OU_ZSCORE_GRIND_THRESHOLD,
     REGIME_BEARISH_GRIND,
+    REGIME_BEARISH_PANIC,
     REGIME_BULLISH_BLOWOFF,
     REGIME_BULLISH_GRIND,
     RR_RATIO,
@@ -97,9 +98,8 @@ def _try_ou(closes: np.ndarray, ema_arr: np.ndarray, lookback: int,
 
     if regime in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF) and z < -z_threshold:
         return ("BUY", z, ou_params, half_life)
-    elif regime == REGIME_BEARISH_GRIND and z > z_threshold:
+    elif regime in (REGIME_BEARISH_GRIND, REGIME_BEARISH_PANIC) and z > z_threshold:
         return ("SELL", z, ou_params, half_life)
-
     return None
 
 
@@ -116,7 +116,8 @@ def generate_signal(
     for higher signal frequency.
     """
     # Gate 1: regime
-    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
+    if regime not in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF,
+                      REGIME_BEARISH_PANIC):
         return None
 
     # Gate 2: data length
@@ -139,12 +140,32 @@ def generate_signal(
             return None  # volatility spike — OU won't work
 
     # Gate 5: Hurst filter — block when price is trending, not mean-reverting
-    # Skip for BLOWOFF: blowoff IS a trending regime; Hurst naturally > 0.53 there
-    hurst_val = 0.0   # 0.0 = not computed (blowoff path or insufficient data)
-    if regime != REGIME_BULLISH_BLOWOFF and len(closes) >= 200:
+    # Skip for BLOWOFF/PANIC: these ARE trending regimes; Hurst naturally > 0.53 there
+    hurst_val = 0.0   # 0.0 = not computed (blowoff/panic path or insufficient data)
+    if regime not in (REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC) and len(closes) >= 200:
         hurst_val = rolling_hurst(closes)
         if hurst_val > HURST_TRENDING_THRESHOLD:
             return None  # trending environment — OU won't work
+
+    # ── PANIC mode: SELL only, mirror of BLOWOFF (fast reversions from extremes) ─
+    if regime == REGIME_BEARISH_PANIC:
+        ema50_col = df_m5.get("ema50")
+        if ema50_col is not None and not pd.isna(last_bar.get("ema50", float("nan"))):
+            ema50_arr = ema50_col.values.astype(float)
+
+            # Parabola gate: block if EMA50 is dropping too fast for OU to work
+            if len(ema50_arr) >= _BLOWOFF_EMA_SLOPE_BARS + 1 and atr > 0:
+                ema_slope = abs(ema50_arr[-1] - ema50_arr[-_BLOWOFF_EMA_SLOPE_BARS]) / _BLOWOFF_EMA_SLOPE_BARS
+                if ema_slope / atr > _BLOWOFF_EMA_SLOPE_THRESH:
+                    return None  # EMA50 dropping too fast — OU mean won't hold
+
+            result = _try_ou(closes, ema50_arr, OU_LOOKBACK, regime,
+                             z_threshold=OU_ZSCORE_BLOWOFF_THRESHOLD,
+                             max_half_life=OU_MAX_HALF_LIFE_BLOWOFF)
+            if result:
+                return _build_signal(result, df_m5, atr, session, regime,
+                                     "ema50_panic", hurst_val)
+        return None  # panic: EMA50 only, no fallback
 
     # ── BLOWOFF mode: BUY only, shallower z=0.6, tighter half-life cap ──────
     if regime == REGIME_BULLISH_BLOWOFF:

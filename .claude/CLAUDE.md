@@ -37,9 +37,9 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 ### Model A — `OU_GRIND`
 - **Strategy:** OU mean-reversion on M5 detrended residuals (EMA50 primary z=0.9, EMA21 fallback z=1.3)
 - **Sessions:** `NY_OVERLAP` (12:00–16:00 GMT) + `NY_CLOSE` (19:00–20:00 GMT — entry cutoff at 20:00 UTC)
-- **Regimes:** `BULLISH_GRIND` (BUY only), `BEARISH_GRIND` (SELL only), `BULLISH_BLOWOFF` (BUY only, z=1.0)
+- **Regimes:** `BULLISH_GRIND` (BUY), `BEARISH_GRIND` (SELL), `BULLISH_BLOWOFF` (BUY, z=1.0), `BEARISH_PANIC` (SELL, z=1.0, EMA50 only — mirror of BLOWOFF)
 - **Session limit:** 8 trades per session
-- **Backtest (Jan 2025–Mar 2026):** 62.2% WR, 0.61 trades/day, fixed-lot Sharpe 6.44, walk-forward validated
+- **Backtest (Jan 2025–Mar 2026):** 63.3% WR, 0.62 trades/day, fixed-lot Sharpe 6.74, Max DD 2.0%
 
 ### Model B — `LONDON_REVERSAL`
 - **Strategy:** Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax
@@ -48,7 +48,7 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 - **Session limit:** 2 trades per session
 - **Time kill:** 120 min (reversals need more room than OU models)
 
-> **No Model C.** Asian breakout was reverted — proved unprofitable in backtest.
+> **No Model C or D.** All alternatives tested and reverted — see Historical Decisions Log.
 
 ---
 
@@ -200,7 +200,7 @@ checks = {
 
 `regime_and_bias_ok` rules:
 - Model A BUY → `BULLISH_GRIND` or `BULLISH_BLOWOFF` + H4 ≠ BEARISH
-- Model A SELL → `BEARISH_GRIND` + H4 ≠ BULLISH
+- Model A SELL → `BEARISH_GRIND` or `BEARISH_PANIC` + H4 ≠ BULLISH
 - Model B BUY → any regime + H4 ≠ BEARISH
 - Model B SELL → any regime + H4 ≠ BULLISH
 
@@ -605,6 +605,11 @@ PHASE 8 ⬜ PENDING    Go Live
 | Model B renamed `OU_LONDON` → `LONDON_REVERSAL` | Implementation is Kalman+CUSUM+N-bar, not OU; name now matches reality |
 | Model C (ASIAN_BREAKOUT) reverted | 27% WR, -$190 P&L in backtest; every optimisation attempt made it worse |
 | KALMAN_FEEDER model rejected | TP set at Model A entry zone (z=±0.9); OU force directly opposes the trade there; 20–27% WR |
+| Model C (KALMAN_TREND) built and reverted | Two configs tested: sustained velocity (32% WR) and flip-initiation (33% WR). M5 gold Hurst=0.37 (structurally mean-reverting) — Kalman velocity is anti-edge at M5 in any trend-following form |
+| Model D (INTRADAY_MOM) built and reverted | 45% WR at 1:2 RR = positive fixed-lot EV, but at 20% compounding the 55% loss rate creates catastrophic drawdowns during high-balance periods (-$36k on $51k account). Not viable with current risk settings |
+| TIGHT_RANGE regime tested for Model A | 29% WR on 278 trades — anti-edge. No macro anchor means residuals don't mean-revert reliably. 111 TIME_KILL exits (price drifts sideways without reaching TP or SL) |
+| LONDON_OPEN tested for Model A | 29% WR on 210 trades — European session has different flow structure; OU mean-reversion doesn't hold. LONDON_OPEN left exclusively to Model B |
+| BEARISH_PANIC added to Model A (SELL only) | Mirror of BULLISH_BLOWOFF. 5/5 wins in backtest, EMA50 only, z=1.0, parabola gate, tighter half-life cap. Highly selective but adds genuine edge during freefall regimes |
 | `RISK_PER_TRADE_PCT = 0.20` | User preference — 20% risk per trade on this specific account |
 | `BREAKEVEN_ATR_THRESHOLD = 1.5` | Raised from 1.0 to reduce whipsaw breakeven exits |
 | `OU_TIME_KILL_HALF_LIFE_MULT = 3` | Extended from 2 — gives OU process more time to mean-revert |

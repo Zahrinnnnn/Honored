@@ -22,9 +22,9 @@ Five async Python agents, zero-LLM, SQLite shared state, Telegram interface.
 ### Model A — OU_GRIND
 Mean-reversion on M5 detrended residuals using Ornstein-Uhlenbeck process.
 - **Sessions:** NY_OVERLAP (12:00–16:00 UTC), NY_CLOSE (19:00–20:00 UTC)
-- **Regimes:** BULLISH_GRIND (BUY), BEARISH_GRIND (SELL), BULLISH_BLOWOFF (BUY)
+- **Regimes:** BULLISH_GRIND (BUY), BEARISH_GRIND (SELL), BULLISH_BLOWOFF (BUY), BEARISH_PANIC (SELL)
 - **Session cap:** 8 trades
-- **Backtest:** 62.2% WR, 0.61 trades/day, Sharpe 6.44 (Jan 2025 – Mar 2026)
+- **Backtest:** 63.3% WR, 0.62 trades/day, Sharpe 6.74, Max DD 2.0% (Jan 2025 – Mar 2026, fixed-lot)
 
 ### Model B — LONDON_REVERSAL
 Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax.

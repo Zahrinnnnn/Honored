@@ -45,7 +45,7 @@ from core.constants import (
     TIME_KILL_MINUTES, MAX_TRADE_DURATION_MINUTES,
     XAUUSD_POINT_VALUE,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
-    REGIME_BULLISH_BLOWOFF,
+    REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC,
     REGIME_H1_BARS_NEEDED,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
     RR_RATIO,
@@ -80,10 +80,13 @@ _BLACKOUT_END   = time(7,  0)
 
 # Model-session routing: which models can fire in which sessions
 _MODEL_SESSIONS = {
-    MODEL_A: {"NY_OVERLAP", "NY_CLOSE"},   # opt 1: add NY_CLOSE session
+    MODEL_A: {"NY_OVERLAP", "NY_CLOSE"},
     MODEL_B: {"LONDON_OPEN"},
 }
-_SESSION_LIMIT = {MODEL_A: 8, MODEL_B: 2}   # max 2 London trades per day total
+_SESSION_LIMIT = {
+    MODEL_A: 8,   # per session
+    MODEL_B: 2,   # per session
+}
 
 
 # ─── Session helpers ──────────────────────────────────────────────────────────
@@ -230,7 +233,7 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
     if model == MODEL_A:
         if direction == "BUY" and regime not in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF):
             return False, "regime_blocked"
-        if direction == "SELL" and regime != REGIME_BEARISH_GRIND:
+        if direction == "SELL" and regime not in (REGIME_BEARISH_GRIND, REGIME_BEARISH_PANIC):
             return False, "regime_blocked"
 
     # Session checks
@@ -395,12 +398,16 @@ def _try_exit_rr(trade, bar, bar_dt):
         result = "WIN" if profit_distance > 0 else "LOSS"
         return {"result": result, "exit_price": close, "exit_reason": "MAX_DURATION"}
 
-    # OU-calibrated time kill: 3 × half_life_bars × 5 min
-    # Model B (London reversal): no half_life — use 120 min (reversals need more time than NY OU)
+    # Time kill per model:
+    #   Model A: OU-calibrated (3 × half_life × 5 min), fallback 60 min
+    #   Model B: 120 min (London reversals need room)
+    #   Model C: 90 min (trend trades need more room than OU)
+    #   Model D: 120 min (momentum continuation needs room)
     half_life = float(trade.get("half_life_bars", 0.0))
+    model = trade.get("model", "")
     if half_life > 0:
         time_kill_mins = half_life * OU_TIME_KILL_HALF_LIFE_MULT * 5.0
-    elif trade.get("model") == MODEL_B:
+    elif model == MODEL_B:
         time_kill_mins = 120.0
     else:
         time_kill_mins = TIME_KILL_MINUTES
@@ -419,34 +426,33 @@ def _try_exit_rr(trade, bar, bar_dt):
 def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
                                macro_bias="NEUTRAL", h4_bias="NEUTRAL",
                                blowoff_age: int = 0):
-    """Generate Model A (NY_OVERLAP) signals for this bar."""
+    """Generate signals for all models at this bar. Priority: B → A."""
     if is_breakout:
         return []
     sigs = []
 
-    _allowed_regimes = (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF)
+    _allowed_regimes = (
+        REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF,
+        REGIME_BEARISH_PANIC,
+    )
 
-    # Model A — OU grind, NY_OVERLAP only
-    if session in _MODEL_SESSIONS[MODEL_A] and regime in _allowed_regimes:
-        sig = _ou_signal(df_m5_win, session, regime, macro_bias=macro_bias)
-        if sig:
-            direction = sig["direction"]
-            # Opt 1 — H4 SMA50 BUY gate: only allow BUY when H4 confirms bullish trend.
-            # Cuts BUY entries during macro downtrends where BULLISH_GRIND is a retracement,
-            # not a genuine uptrend. H4 SMA50 is slow — only flips on multi-week moves.
-            if direction == "BUY" and h4_bias != "BULLISH":
-                pass  # H4 macro bearish/neutral — skip BUY
-            # Opt 1 — H4 SMA50 SELL gate (existing): only allow SELL when H4 confirms bearish.
-            elif direction == "SELL" and h4_bias != "BEARISH":
-                pass  # H4 not confirming bearish — skip SELL
-            else:
-                sigs.append(sig)
-
-    # Model B — London multi-signal reversal (Kalman + CUSUM + N-bar + Volume climax)
+    # Model B — London reversal (Kalman + CUSUM + N-bar + Volume climax)
     if session in _MODEL_SESSIONS[MODEL_B]:
         sig = _london_reversal_signal(df_m5_win, session, regime=regime, h4_bias=h4_bias)
         if sig:
             sigs.append(sig)
+
+    # Model A — OU grind (NY sessions, directional regimes + BEARISH_PANIC)
+    if session in _MODEL_SESSIONS[MODEL_A] and regime in _allowed_regimes:
+        sig = _ou_signal(df_m5_win, session, regime, macro_bias=macro_bias)
+        if sig:
+            direction = sig["direction"]
+            if direction == "BUY" and h4_bias != "BULLISH":
+                pass
+            elif direction == "SELL" and h4_bias != "BEARISH":
+                pass
+            else:
+                sigs.append(sig)
 
     return sigs
 
@@ -464,7 +470,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         fixed_lot: if set, every trade uses this lot size (bypasses anti-martingale).
     """
     if models_to_run is None:
-        models_to_run = {MODEL_A}
+        models_to_run = {MODEL_A, MODEL_B}
 
     # Precompute ATR percentile for dynamic spread/slippage
     atr_pctile = _precompute_atr_pctile(df_m5_ind)
@@ -477,7 +483,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         "session_counts":         {},
         "soft_halt":              False,
         "orb_fired_date":         None,    # ORB fires at most once per day
-        "vwap_last_entry_bar":    -999,    # VWAP cooldown: bar index of last entry
+        "vwap_last_entry_bar":    -999,    # Model B cooldown: bar index of last London entry
         "emergency_halt":         False,
         "all_trades":             [],
         "refill_count":           0,
@@ -549,7 +555,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         for sig in sigs:
             signals_generated += 1
 
-            # London reversal: cooldown 12 bars (60 min) between entries
+            # Model B: 60 min cooldown between London reversal entries
             if sig["model"] == MODEL_B:
                 if i - state["vwap_last_entry_bar"] < 12:
                     reject_reasons["london_cooldown"] += 1
