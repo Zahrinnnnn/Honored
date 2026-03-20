@@ -89,17 +89,40 @@ NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 # ─────────────────────────────────────────────────────────────────────────────
 MODEL_A = "OU_GRIND"
 MODEL_B = "LONDON_REVERSAL"   # Kalman + CUSUM + N-bar + volume climax, London Open only
+MODEL_C = "KALMAN_TREND"      # Kalman velocity sustained trend following
+MODEL_D = "INTRADAY_MOM"      # NY open momentum continuation (14:00–16:00 UTC)
 
 LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 2   # matches backtest cap
 
+# ── Model C — Kalman Trend ────────────────────────────────────────────────────
+KALMAN_TREND_CONSEC_BARS           = 5      # consecutive M5 bars velocity must hold
+KALMAN_TREND_VEL_THRESHOLD         = 0.03   # minimum velocity magnitude per bar
+KALMAN_TREND_HURST_MIN             = 0.55   # Hurst must exceed this (trending env)
+KALMAN_TREND_MAX_TRADES_PER_SESSION = 3     # session cap
+MODEL_C_TIME_KILL_MINUTES          = 90     # trend trades get more room than OU
+
+# ── Model D — Intraday Momentum ───────────────────────────────────────────────
+IMOM_MEASURE_START_HOUR   = 12    # UTC — measurement window open
+IMOM_MEASURE_END_HOUR     = 14    # UTC — measurement window close
+IMOM_TRADE_START_HOUR     = 14    # UTC — trading window open
+IMOM_TRADE_END_HOUR       = 16    # UTC — trading window close
+IMOM_MOMENTUM_THRESHOLD   = 0.5   # net_return must exceed N × ATR to qualify
+IMOM_MIN_MEASURE_BARS     = 20    # minimum M5 bars required in 12:00–14:00 window
+IMOM_MAX_TRADES_PER_DAY   = 1     # fires once per day at most
+MODEL_D_TIME_KILL_MINUTES = 120   # momentum needs room — same as Model B
+
 MODEL_SESSION_LIMITS = {
-    MODEL_A: M5_MAX_TRADES_PER_SESSION,              # 8 per session
-    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION, # 2 per session (backtest-validated)
+    MODEL_A: M5_MAX_TRADES_PER_SESSION,               # 8 per session
+    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION,  # 2 per session (backtest-validated)
+    MODEL_C: KALMAN_TREND_MAX_TRADES_PER_SESSION,     # 3 per session
+    MODEL_D: IMOM_MAX_TRADES_PER_DAY,                 # 1 per day
 }
 
 MODEL_SESSIONS = {
-    MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],   # NY_CLOSE capped at 20:00 UTC entry cutoff
+    MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],                    # NY_CLOSE capped at 20:00 UTC entry cutoff
     MODEL_B: ["LONDON_OPEN"],
+    MODEL_C: ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"],     # all active sessions
+    MODEL_D: ["NY_OVERLAP"],                                # time-gated internally to 14:00–16:00 UTC
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
