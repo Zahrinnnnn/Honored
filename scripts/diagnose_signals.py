@@ -29,7 +29,6 @@ from agents.nanami.skills.htf_regime import detect_regime, check_structural_brea
 from agents.nanami.skills.stat_tests import adf_stationary, fit_ou, ou_zscore
 from core.constants import (
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
-    REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC, REGIME_TOXIC_CHOP,
     REGIME_H1_BARS_NEEDED,
     OU_ZSCORE_ENTRY_THRESHOLD, OU_MIN_HALF_LIFE, OU_MAX_HALF_LIFE,
 )
@@ -103,7 +102,7 @@ def main():
         pct = regime_counts[r] / sample_count * 100
         print(f"    {r:<25} {regime_counts[r]:>5}  ({pct:>5.1f}%)")
 
-    print(f"\n  By session:")
+    print("\n  By session:")
     for sess in ["LONDON_OPEN", "NY_OVERLAP", "NY_CLOSE"]:
         total = sum(regime_by_session[sess].values())
         if total == 0:
@@ -226,7 +225,7 @@ def main():
     print(f"\n  Total eligible session bars (sampled): {gate_stats['total_eligible_bars']}")
     print(f"  In GRIND regimes:                      {gate_stats['regime_grind']}")
     print(f"  In TIGHT_RANGE:                        {gate_stats['regime_tight']}")
-    print(f"\n  -- Gate funnel --")
+    print("\n  -- Gate funnel --")
     print(f"  ADF tested:       {gate_stats['adf_tested']}")
     print(f"  ADF passed:       {gate_stats['adf_passed']}  ({gate_stats['adf_passed']/max(gate_stats['adf_tested'],1)*100:.1f}%)")
     print(f"  OU fit success:   {gate_stats['ou_fit_success']}  ({gate_stats['ou_fit_success']/max(gate_stats['ou_fit_tested'],1)*100:.1f}%)")
@@ -280,7 +279,7 @@ def main():
             print(f"    Break at {df_h1.index[i]}")
     print(f"\n  Total structural breaks: {sb_count}")
     if sb_count > 0:
-        print(f"  Each blocks trading for 4 hours")
+        print("  Each blocks trading for 4 hours")
 
     print("\n" + "=" * 70)
     print("  DIAGNOSIS COMPLETE")

@@ -37,7 +37,6 @@ from core.constants import (
     HURST_TRENDING_THRESHOLD,
     MODEL_A,
     OU_LOOKBACK,
-    OU_LOOKBACK_MID,
     OU_LOOKBACK_SHORT,
     OU_MAX_HALF_LIFE,
     OU_MAX_HALF_LIFE_BLOWOFF,
@@ -46,7 +45,6 @@ from core.constants import (
     OU_SL_MAX,
     OU_SL_MIN,
     OU_ZSCORE_BLOWOFF_THRESHOLD,
-    OU_ZSCORE_EMA34_THRESHOLD,
     OU_ZSCORE_ENTRY_THRESHOLD,
     OU_ZSCORE_GRIND_THRESHOLD,
     REGIME_BEARISH_GRIND,
@@ -142,9 +140,10 @@ def generate_signal(
 
     # Gate 5: Hurst filter — block when price is trending, not mean-reverting
     # Skip for BLOWOFF: blowoff IS a trending regime; Hurst naturally > 0.53 there
+    hurst_val = 0.0   # 0.0 = not computed (blowoff path or insufficient data)
     if regime != REGIME_BULLISH_BLOWOFF and len(closes) >= 200:
-        hurst = rolling_hurst(closes)
-        if hurst > HURST_TRENDING_THRESHOLD:
+        hurst_val = rolling_hurst(closes)
+        if hurst_val > HURST_TRENDING_THRESHOLD:
             return None  # trending environment — OU won't work
 
     # ── BLOWOFF mode: BUY only, shallower z=0.6, tighter half-life cap ──────
@@ -165,7 +164,8 @@ def generate_signal(
                              z_threshold=OU_ZSCORE_BLOWOFF_THRESHOLD,
                              max_half_life=OU_MAX_HALF_LIFE_BLOWOFF)
             if result:
-                return _build_signal(result, df_m5, atr, session, regime, "ema50_blowoff")
+                return _build_signal(result, df_m5, atr, session, regime,
+                                     "ema50_blowoff", hurst_val)
         return None  # blowoff: EMA50 only, no fallback
 
     # ── GRIND mode: EMA50 primary, EMA21 fallback ─────────────────────────
@@ -176,7 +176,7 @@ def generate_signal(
         result = _try_ou(closes, ema50_arr, OU_LOOKBACK, regime,
                          z_threshold=OU_ZSCORE_GRIND_THRESHOLD)
         if result:
-            return _build_signal(result, df_m5, atr, session, regime, "ema50")
+            return _build_signal(result, df_m5, atr, session, regime, "ema50", hurst_val)
 
     # EMA21 detrend (fallback — stricter z=1.3, shorter window)
     ema21_col = df_m5.get("ema21")
@@ -186,13 +186,15 @@ def generate_signal(
             result = _try_ou(closes, ema21_arr, OU_LOOKBACK_SHORT, regime,
                              z_threshold=OU_ZSCORE_ENTRY_THRESHOLD)
             if result:
-                return _build_signal(result, df_m5, atr, session, regime, "ema21")
+                return _build_signal(result, df_m5, atr, session, regime,
+                                     "ema21", hurst_val)
 
     return None
 
 
 def _build_signal(ou_result: tuple, df_m5: pd.DataFrame, atr: float,
-                  session: str, regime: str, detrend: str) -> dict:
+                  session: str, regime: str, detrend: str,
+                  hurst: float = 0.0) -> dict:
     direction, z, ou_params, half_life = ou_result
 
     sl_distance = round(max(OU_SL_MIN, min(OU_SL_MAX, atr * OU_SL_ATR_MULT)), 2)
@@ -207,18 +209,22 @@ def _build_signal(ou_result: tuple, df_m5: pd.DataFrame, atr: float,
         tp_price = round(entry - tp_distance, 2)
 
     return {
-        "id":              str(uuid.uuid4()),
-        "model":           MODEL_A,
-        "direction":       direction,
-        "entry_price":     entry,
-        "sl_price":        sl_price,
-        "tp_price":        tp_price,
-        "sl_distance":     sl_distance,
-        "atr_at_entry":    round(atr, 2),
-        "half_life_bars":  round(half_life, 1),
-        "session":         session,
-        "regime":          regime,
-        "reason":          (f"OU grind | regime={regime} | z={z:.2f} "
-                           f"| mu={ou_params['mu']:.2f} | hl={half_life:.1f} "
-                           f"| ATR={atr:.2f} | dt={detrend}"),
+        "id":               str(uuid.uuid4()),
+        "model":            MODEL_A,
+        "direction":        direction,
+        "entry_price":      entry,
+        "sl_price":         sl_price,
+        "tp_price":         tp_price,
+        "sl_distance":      sl_distance,
+        "atr_at_entry":     round(atr, 2),
+        "half_life_bars":   round(half_life, 1),
+        "session":          session,
+        "regime":           regime,
+        # Entry context — stored in trades table for MAHORAGA analysis
+        "zscore_at_entry":  round(float(z), 4),
+        "hurst_at_entry":   round(float(hurst), 4),
+        "detrend_method":   detrend,
+        "reason":           (f"OU grind | regime={regime} | z={z:.2f} "
+                            f"| mu={ou_params['mu']:.2f} | hl={half_life:.1f} "
+                            f"| ATR={atr:.2f} | dt={detrend}"),
     }

@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS alert_queue (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS param_proposals (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id    TEXT UNIQUE NOT NULL,
+    model          TEXT NOT NULL,
+    parameter      TEXT NOT NULL,
+    current_value  TEXT NOT NULL,
+    proposed_value TEXT NOT NULL,
+    rationale      TEXT NOT NULL,
+    confidence     INTEGER DEFAULT 0,
+    expected_impact TEXT NOT NULL,
+    priority       TEXT DEFAULT 'MEDIUM',
+    status         TEXT DEFAULT 'PENDING',
+    created_at     TEXT NOT NULL,
+    resolved_at    TEXT
+);
+
 CREATE TABLE IF NOT EXISTS mahoraga_state (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -130,8 +146,20 @@ class StateManager:
     async def _setup_schema(self):
         await self._conn.executescript(_DDL)
         await self._conn.commit()
-        # Idempotent column migrations
-        for col, col_type in [("atr_at_entry", "REAL"), ("exit_reason", "TEXT")]:
+        # Idempotent column migrations — add new columns without breaking existing DBs
+        _trade_cols = [
+            ("atr_at_entry",          "REAL"),
+            ("exit_reason",           "TEXT"),
+            ("regime_at_entry",       "TEXT"),
+            ("h4_bias_at_entry",      "TEXT"),
+            ("hurst_at_entry",        "REAL"),
+            ("zscore_at_entry",       "REAL"),
+            ("detrend_method",        "TEXT"),
+            ("spread_at_entry",       "REAL"),
+            ("mins_to_news_at_entry", "REAL"),
+            ("entry_hour_utc",        "INTEGER"),
+        ]
+        for col, col_type in _trade_cols:
             try:
                 await self._conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
                 await self._conn.commit()
@@ -349,6 +377,42 @@ class StateManager:
 
     async def set_mahoraga_state(self, key: str, value):
         await self._upsert_kv("mahoraga_state", key, str(value))
+
+    # ── param_proposals ──────────────────────────────────────────────────────
+
+    async def save_param_proposal(
+        self, proposal_id: str, model: str, parameter: str,
+        current_value: str, proposed_value: str, rationale: str,
+        confidence: int, expected_impact: str, priority: str = "MEDIUM",
+    ):
+        await self._conn.execute(
+            """
+            INSERT INTO param_proposals
+                (proposal_id, model, parameter, current_value, proposed_value,
+                 rationale, confidence, expected_impact, priority, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)
+            ON CONFLICT(proposal_id) DO UPDATE SET
+                rationale      = excluded.rationale,
+                confidence     = excluded.confidence,
+                expected_impact= excluded.expected_impact,
+                priority       = excluded.priority
+            """,
+            (proposal_id, model, parameter, current_value, proposed_value,
+             rationale, confidence, expected_impact, priority, _now()),
+        )
+        await self._conn.commit()
+
+    async def get_pending_proposals(self) -> list:
+        rows = await self._fetchall(
+            "SELECT * FROM param_proposals WHERE status = 'PENDING' ORDER BY id ASC"
+        )
+        return [dict(r) for r in rows]
+
+    async def get_all_proposals(self, limit: int = 50) -> list:
+        rows = await self._fetchall(
+            "SELECT * FROM param_proposals ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(r) for r in rows]
 
     # ── internal helpers ─────────────────────────────────────────────────────
 

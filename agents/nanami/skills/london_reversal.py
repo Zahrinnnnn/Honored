@@ -345,6 +345,11 @@ def generate_signal(df_m5_win: pd.DataFrame, session: str,
         "sl_price":            sl,
         "tp_price":            tp,
         "sl_distance":         round(sl_distance, 2),
+        "atr_at_entry":        round(float(atr), 2),
+        # Entry context — stored in trades table for MAHORAGA analysis
+        "zscore_at_entry":     0.0,    # not OU-based — N/A
+        "hurst_at_entry":      0.0,    # not computed for Model B
+        "detrend_method":      "kalman",
         "score":               total_score,
         "kalman_score":        kalman_score,
         "consec_count":        consec_count,

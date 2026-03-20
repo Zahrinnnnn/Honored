@@ -41,15 +41,12 @@ from agents.toji.skills.lot_calculator import calculate_lot
 from agents.toji.skills.trade_monitor import calculate_pnl
 from core.constants import (
     MODEL_A, MODEL_B,
-    BREAKEVEN_ATR_THRESHOLD,
-    NY_OVERLAP_DEAD_HOUR_START, NY_OVERLAP_DEAD_HOUR_END,
     OU_TIME_KILL_HALF_LIFE_MULT,
     TIME_KILL_MINUTES, MAX_TRADE_DURATION_MINUTES,
     XAUUSD_POINT_VALUE,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_TIGHT_RANGE,
     REGIME_BULLISH_BLOWOFF,
     REGIME_H1_BARS_NEEDED,
-    REGIME_PERSISTENCE_BARS,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
     RR_RATIO,
     ACCOUNT_TYPE,
@@ -663,13 +660,13 @@ def run_monte_carlo(trades: list, start_balance: float, n_sims: int = 2000):
     print(f"  Profitable runs      : {profitable:.1f}%")
     print(f"  Busted runs (<$0.50) : {busted:.1f}%")
     print()
-    print(f"  Final Balance distribution:")
+    print("  Final Balance distribution:")
     for pct, label in [(5, "5th "), (25, "25th"), (50, "50th (median)"),
                        (75, "75th"), (95, "95th")]:
         idx = min(int(n_sims * pct / 100), n_sims - 1)
         print(f"    {label} pctile : ${final_balances[idx]:>12,.2f}")
     print()
-    print(f"  Max Drawdown distribution:")
+    print("  Max Drawdown distribution:")
     for pct, label in [(5, "5th "), (50, "50th (median)"), (95, "95th")]:
         idx = min(int(n_sims * pct / 100), n_sims - 1)
         print(f"    {label} pctile : {max_dds[idx]:.1f}%")
@@ -781,7 +778,7 @@ def _print_summary(res: dict, start_bal: float, trading_days: int):
 
         print(f"      Realized RR (pts): {realized_rr_pts:.2f}  ← true trade quality (target: {RR_RATIO})")
         print(f"      Realized RR (USD): {realized_rr_usd:.2f}  ← anti-martingale distortion (losses at bigger lots)")
-        print(f"      Exit reasons:")
+        print("      Exit reasons:")
         for reason, count in grp["exit_reason"].value_counts().items():
             print(f"        {reason:<15} {count:>5}")
 

@@ -61,8 +61,8 @@ async def init(db_path: str, balance: float, paper: bool):
     mode = "PAPER" if paper else "LIVE"
     print(f"[init_db] ✓ {mode} database initialized: {db_path}")
     print(f"[init_db] ✓ Starting balance : ${balance:.2f}")
-    print(f"[init_db] ✓ System status    : ACTIVE")
-    print(f"[init_db] ✓ All flags        : cleared")
+    print("[init_db] ✓ System status    : ACTIVE")
+    print("[init_db] ✓ All flags        : cleared")
 
 
 def main():

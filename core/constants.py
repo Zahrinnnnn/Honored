@@ -88,11 +88,13 @@ NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 # Model name constants
 # ─────────────────────────────────────────────────────────────────────────────
 MODEL_A = "OU_GRIND"
-MODEL_B = "OU_LONDON"   # Same OU engine as Model A, London Open session only
+MODEL_B = "LONDON_REVERSAL"   # Kalman + CUSUM + N-bar + volume climax, London Open only
+
+LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 2   # matches backtest cap
 
 MODEL_SESSION_LIMITS = {
-    MODEL_A: M5_MAX_TRADES_PER_SESSION,   # 8 per session
-    MODEL_B: M5_MAX_TRADES_PER_SESSION,   # 8 per session
+    MODEL_A: M5_MAX_TRADES_PER_SESSION,              # 8 per session
+    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION, # 2 per session (backtest-validated)
 }
 
 MODEL_SESSIONS = {

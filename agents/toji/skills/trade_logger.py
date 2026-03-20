@@ -61,21 +61,41 @@ async def log_trade_open(
     sl_distance = float(signal.get("sl_distance", 0.0))
     risk_amount = round(lot_size * sl_distance, 2)
 
+    # Entry context — read from signal + session_info at the moment of trade open
+    spread_raw      = await state.get_session_info("current_spread")
+    news_raw        = await state.get_session_info("minutes_to_next_news")
+    try:
+        spread_at_entry = float(spread_raw) if spread_raw else 0.0
+    except ValueError:
+        spread_at_entry = 0.0
+    try:
+        mins_to_news = float(news_raw) if news_raw else 0.0
+    except ValueError:
+        mins_to_news = 0.0
+
     trade_id = await state.log_trade(
-        date          = now.strftime("%Y-%m-%d"),
-        time          = now.strftime("%H:%M:%S"),
-        model         = signal.get("model",     ""),
-        direction     = signal.get("direction", ""),
-        entry_price   = float(order_result.get("entry_price", 0.0)),
-        sl_price      = float(signal.get("sl_price", 0.0)),
-        tp_price      = float(signal.get("tp_price", 0.0)),
-        lot_size      = lot_size,
-        sl_distance   = sl_distance,
-        risk_amount   = risk_amount,
-        balance_before = balance_before,
-        reason        = signal.get("reason", ""),
-        paper         = 1 if PAPER_MODE else 0,
-        atr_at_entry  = float(signal.get("atr_at_entry", 0.0)),
+        date                  = now.strftime("%Y-%m-%d"),
+        time                  = now.strftime("%H:%M:%S"),
+        model                 = signal.get("model",     ""),
+        direction             = signal.get("direction", ""),
+        entry_price           = float(order_result.get("entry_price", 0.0)),
+        sl_price              = float(signal.get("sl_price", 0.0)),
+        tp_price              = float(signal.get("tp_price", 0.0)),
+        lot_size              = lot_size,
+        sl_distance           = sl_distance,
+        risk_amount           = risk_amount,
+        balance_before        = balance_before,
+        reason                = signal.get("reason", ""),
+        paper                 = 1 if PAPER_MODE else 0,
+        atr_at_entry          = float(signal.get("atr_at_entry",    0.0)),
+        regime_at_entry       = signal.get("regime",                ""),
+        h4_bias_at_entry      = signal.get("h4_bias", signal.get("macro_bias", "")),
+        hurst_at_entry        = float(signal.get("hurst_at_entry",  0.0)),
+        zscore_at_entry       = float(signal.get("zscore_at_entry", 0.0)),
+        detrend_method        = signal.get("detrend_method",        ""),
+        spread_at_entry       = spread_at_entry,
+        mins_to_news_at_entry = mins_to_news,
+        entry_hour_utc        = now.hour,
     )
 
     logger.info(

@@ -1,329 +1,195 @@
 # HONORED — Autonomous XAUUSD Trading System
 
-> *"The strongest don't need luck. They need a system."*
-
-**HONORED** is a fully autonomous, multi-agent algorithmic trading system built for XAUUSD (Gold/USD) on an HFM MT5 account. Five specialized agents run 24/7, each named after a Jujutsu Kaisen character — because the strongest cursed spirits don't sleep, and neither does this system.
+Fully automated gold trading system running on MetaApi (HFM MT5).
+Five async Python agents, zero-LLM, SQLite shared state, Telegram interface.
 
 ---
 
-## The Agents
+## Agents
 
-| Agent | Character | Type | Role |
-|-------|-----------|------|------|
-| **GOJO** | Satoru Gojo | OpenClaw + DeepSeek | Commander — orchestration, WhatsApp comms, JARVIS-style interface |
-| **NANAMI** | Kento Nanami | Pure Python | Analyst — market watching, 6-state regime detection, OU signal generation |
-| **GETO** | Suguru Geto | Pure Python | Risk Manager — 11-check validator, account protection, the immune system |
-| **TOJI** | Toji Fushiguro | Pure Python | Executor — MetaApi order placement, anti-martingale sizing, trade monitoring |
-| **MAHORAGA** | Mahoraga | Python + LLM | Learning — performance analysis, strategy optimization, adaptation |
-
-> GETO's validation is pure `if/else` — it cannot be reasoned around. MAHORAGA adapts but never acts unilaterally. GOJO never touches trade logic. The architecture is paranoid by design.
+| Agent | Role |
+|-------|------|
+| **GOJO** | Telegram bot — command interface, alert delivery |
+| **NANAMI** | Analyst — market data, signal generation (Model A + B) |
+| **GETO** | Risk Manager — 10-check signal validator, halt logic |
+| **TOJI** | Executor — lot sizing, order placement, trade monitoring |
+| **MAHORAGA** | Learning — CUSUM drift detection, statistical analysis, parameter proposals |
 
 ---
 
 ## Trading Models
 
-### Model A — OU Grind (Directional Mean-Reversion) ✅ Active
-- **Sessions:** NY Overlap (12:00–16:00 GMT) only
-  - Dead zone: 14:00–15:00 UTC blocked (US midday doldrums, historically weak)
-  - LONDON_OPEN and NY_CLOSE disabled (underperforming in data)
-- **Regime:** BULLISH_GRIND or BEARISH_GRIND only (6-state H1 regime)
-- **Logic:** Ornstein-Uhlenbeck mean-reversion with dual detrend — EMA50 primary (z≥0.9, 80-bar) + EMA21 fallback (z≥1.3, 40-bar). BUY in BULLISH_GRIND when z < -threshold, SELL in BEARISH_GRIND when z > threshold
-- **Gates:** ADF stationary, OU fit valid, 3 ≤ half_life ≤ 50, |z| > threshold
-- **Risk:** SL = 1.5×ATR clamped $6–$12, TP = SL×2, max 8 trades/session
+### Model A — OU_GRIND
+Mean-reversion on M5 detrended residuals using Ornstein-Uhlenbeck process.
+- **Sessions:** NY_OVERLAP (12:00–16:00 UTC), NY_CLOSE (19:00–20:00 UTC)
+- **Regimes:** BULLISH_GRIND (BUY), BEARISH_GRIND (SELL), BULLISH_BLOWOFF (BUY)
+- **Session cap:** 8 trades
+- **Backtest:** 62.2% WR, 0.61 trades/day, Sharpe 6.44 (Jan 2025 – Mar 2026)
 
-### Model B — OU Range (Bidirectional Mean-Reversion) ⛔ Disabled
-- Disabled — negative expectancy after spread/slippage on current data
-- **When re-enabled:** NY Overlap only. Regime: TIGHT_RANGE. EMA50 detrend, z≥1.3 bidirectional
-
-### Model C — Asian Breakout ⛔ Disabled
-- Disabled — insufficient trade count for reliable live validation
-- **When re-enabled:** 07:00–07:30 GMT only. H4 bias filter. Asian range break with min $3 range guard
+### Model B — LONDON_REVERSAL
+Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax.
+- **Session:** LONDON_OPEN (08:00–10:00 UTC, entry blocked before 08:00)
+- **Session cap:** 2 trades
+- **Minimum score:** 3 points (Kalman flip mandatory + at least 1 confirmation)
 
 ---
 
-## Risk Rules (Hard Stops — No Exceptions)
+## Risk Rules
 
-```
-Risk per trade:        20% of current balance
-Risk:Reward ratio:     1:2 fixed (TP always = SL × 2)
-Open trades:           No cap in production (GETO exposure guard: >80% balance → block)
-Max drawdown:          50% → EMERGENCY HALT (user unlock only)
-Consecutive losses:    3 in a row → SOFT HALT (user "override" to resume)
-News blackout:         30 min before/after high-impact events (Finnhub)
-Max spread:            $4.00
-Structural break:      H1 candle > 3×ATR14 → 4h cooldown
-```
+| Parameter | Value |
+|-----------|-------|
+| Risk per trade | 20% of balance |
+| RR ratio | 1:2 fixed |
+| SL | 1.5 × ATR14, clamped $6–$12 |
+| Anti-martingale | lot ÷ 2^consecutive_losses |
+| Breakeven | Move SL to entry at +1.5 × ATR profit |
+| 3 consecutive losses | Soft halt — `/override` to resume |
+| 50% drawdown | Emergency halt — manual flag reset |
+| News blackout | 30 min before/after high-impact events |
+| Max spread | $4.00 |
 
-### Anti-Martingale Lot Sizing
-```python
-lot = round((balance × 20%) / sl_distance, 2)
-# After each consecutive loss: lot / 2^consecutive_losses
-# Floor at 0.01 lot minimum, resets on win
-# balance=$20, SL=$8  → lot=0.05
-# balance=$20, SL=$8, 1 loss → lot=0.03
-# balance=$20, SL=$8, 2 losses → lot=0.01
+---
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Configure
+cp .env.example .env
+# Fill in: META_API_TOKEN, HFM_ACCOUNT_ID, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#          FINNHUB_API_KEY, PAPER_MODE, ACCOUNT_TYPE, HONORED_DB_PATH
+
+# 3. Initialise database
+python scripts/init_db.py --balance 200
+
+# 4. Run all agents (development)
+python agents/gojo/agent.py &
+python agents/nanami/agent.py &
+python agents/geto/agent.py &
+python agents/toji/agent.py &
+python agents/mahoraga/agent.py &
+
+# 5. Tests
+pytest tests/ -v
 ```
 
 ---
 
-## Backtest Results — Model A (6 months, realistic friction, $20 start)
+## VPS Deployment (supervisord)
 
-```
-Model A (NY_OVERLAP only):
-  Trades        : 48  (23W / 5L / 20BE)
-  Decisive WR   : 82.1%  (excludes breakeven exits)
-  Net P&L       : $20 → $1,024  (+$1,004, no refills)
-  Sharpe        : 2.80
-  Max DD        : 48.5%
-  Trades/day    : 0.38
-  RR (pts)      : 3.14  ← true trade quality
-  RR (USD)      : 1.31  ← anti-martingale distortion (expected: losses at bigger lots)
-
-  By direction  : BUY 72% WR (13W/5L) | SELL 100% WR (10W/0L)
-  By regime     : BULLISH_GRIND 72% | BEARISH_GRIND 100%
-
-Walk-forward validation (H1 vs H2):
-  H1 (Oct–Dec) : 17 trades, 81.8% WR, +$112, Sharpe 1.99
-  H2 (Dec–Mar) : 31 trades, 82.4% WR, +$134, Sharpe 2.55
-
-Fixed-lot validation (0.01 lot, no compounding):
-  Net P&L: +$3.30 over 48 trades — edge is real, not a compounding artifact
+```bash
+sudo cp deploy/supervisord.conf /etc/supervisor/conf.d/honored.conf
+sudo supervisorctl reread && sudo supervisorctl update
+sudo supervisorctl status honored:*
 ```
 
-Realistic friction: dynamic spread ($0.35 calm → $1.20 volatile), slippage ($0.10 → $0.30), switched at ATR percentile > 80.
+Logs: `/var/log/honored/*.out.log` and `*.err.log`
 
 ---
 
-## Architecture
+## Telegram Commands
 
-```
-WhatsApp ←→ OpenClaw (Node.js daemon) ←→ GOJO
-                                              ↕ SQLite (honored.db)
-                          NANAMI ←→ GETO ←→ TOJI ←→ MAHORAGA
-```
-
-- **GOJO** (OpenClaw) handles all WhatsApp I/O via Baileys — no Meta Business account needed
-- **Python agents** are standalone `asyncio` processes with zero knowledge of each other
-- **SQLite** is the only inter-agent communication channel — no message brokers, no HTTP calls
-- **GOJO heartbeat** (every 60s) polls the `alert_queue` table and pushes pending alerts to WhatsApp
-- **MAHORAGA** runs daily at 21:30 GMT and weekly on Sundays — never live, never auto-applies changes
+| Command | Action |
+|---------|--------|
+| `/status` | System snapshot: session, regime, balance, open trades, news |
+| `/pause` | Pause trading (GETO blocks all new signals) |
+| `/resume` | Resume trading |
+| `/override` | Clear halt + reset consecutive losses |
+| `/report [N]` | N-day trade report (default 7) |
+| `/proposals` | List pending MAHORAGA parameter proposals |
 
 ---
 
-## WhatsApp Commands
+## MAHORAGA — Learning Agent
 
-| Command | What it does |
-|---------|-------------|
-| `status` | Gold price, balance/DD, regime, session, open trades, today P&L, upcoming news (next 6h, medium+high) |
-| `report` | Last 7 days — win rate, total P&L, avg trade, best/worst, breakdown by model |
-| `report 30` | Same, last 30 days |
-| `pause` | Pause signal generation (NANAMI keeps watching, no new trades) |
-| `resume` | Resume trading |
-| `override` | Clear soft halt after 3 consecutive losses |
-| `emergency override` | Clear emergency halt after 50% drawdown |
-| `why` | Last signal details + GETO's validation decision |
-| `analyze` | Trigger MAHORAGA performance analysis immediately |
-| `help` | Show command reference |
+Runs on a schedule (daily 21:30 GMT, weekly Sunday) and on a micro-trigger (every 5 trades).
 
-GOJO responds in JARVIS style — confident, dry wit, never robotic.
+**What it does:**
+- Computes expectancy, Sharpe, Calmar, profit factor, streak stats per model
+- Slices performance by: UTC hour, regime, direction, session, z-score bucket, H4 bias, detrend method
+- Runs **CUSUM drift detection** per model — fires `MAHORAGA_DRIFT` alert immediately if win rate degrades significantly
+- Generates concrete parameter proposals (z-score thresholds, session limits, dead hours) stored in `param_proposals` table
 
-> **Anti-hallucination:** Status responses use `get_status_text.py` which outputs pre-formatted plain text. GOJO echoes it verbatim — no LLM reformatting, no stale data possible. If GOJO starts returning wrong data, run `bash scripts/reset_gojo_session.sh` to clear the poisoned WhatsApp session history.
-
-> **Note:** GOJO scripts use a standalone `_load_honored_env()` parser (no python-dotenv dependency). The `HONORED_DB` path **must be absolute** — relative paths resolve to `~/.openclaw/workspace/` and will read the wrong DB.
+**What it never does:**
+- Auto-apply any parameter change — user reads `/proposals` and updates `core/constants.py` manually
 
 ---
 
-## Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Commander (GOJO) | OpenClaw + DeepSeek Chat (custom provider, openai-completions compat) |
-| WhatsApp | OpenClaw + Baileys (no Meta Business account needed) |
-| Trading agents | Python 3.11 + asyncio |
-| Indicators | `ta` library + statsmodels (ADF, OU fit, Hurst) |
-| Broker API | MetaApi Cloud (REST) |
-| News calendar | Finnhub free tier (API key required) |
-| Shared state | SQLite (WAL mode, concurrent-safe) |
-| Process mgmt (VPS) | OpenClaw → systemd, Python agents → supervisord |
-
----
-
-## Project Structure
+## File Structure
 
 ```
 honored/
-├── core/
-│   ├── constants.py          # All thresholds, session windows, model configs
-│   ├── state_manager.py      # SQLite wrapper — all DB access goes through here
-│   ├── metaapi_client.py     # MetaApi connection with retry/backoff
-│   └── news_fetcher.py       # Finnhub calendar — blocks trades if unreachable
-│
 ├── agents/
-│   ├── nanami/               # Analyst — signals every 60s
-│   │   └── skills/           # market_data, indicator_engine, stat_tests,
-│   │                         # htf_regime, ou_grind, ou_range, asian_breakout
-│   ├── geto/                 # Risk Manager — 11-check validator
-│   ├── toji/                 # Executor — anti-martingale lot sizing, order placement
-│   └── mahoraga/             # Learning — scheduled performance analysis
-│
-├── gojo/                     # OpenClaw workspace files
-│   ├── SOUL.md               # JARVIS personality definition
-│   ├── AGENTS.md             # Command routing rules
-│   ├── HEARTBEAT.md          # Alert queue polling
-│   └── skills/honored-trading/
-│       ├── SKILL.md          # Skill definition for OpenClaw
-│       └── scripts/          # Python tools GOJO calls via exec
-│           └── get_status_text.py  # Pre-formatted WhatsApp status (GOJO echoes verbatim)
-│
+│   ├── gojo/agent.py               Telegram bot
+│   ├── nanami/agent.py             Analyst (60s loop)
+│   │   └── skills/
+│   │       ├── market_data.py
+│   │       ├── indicator_engine.py
+│   │       ├── stat_tests.py
+│   │       ├── htf_regime.py
+│   │       ├── session_detector.py
+│   │       ├── ou_grind.py         Model A
+│   │       └── london_reversal.py  Model B
+│   ├── geto/agent.py               Risk Manager
+│   │   └── skills/
+│   │       ├── trade_validator.py  10-check validator
+│   │       ├── news_calendar.py
+│   │       ├── account_monitor.py
+│   │       ├── consecutive_tracker.py
+│   │       └── dd_monitor.py
+│   ├── toji/agent.py               Executor
+│   │   └── skills/
+│   │       ├── lot_calculator.py
+│   │       ├── order_placer.py
+│   │       ├── trade_monitor.py
+│   │       ├── trade_logger.py
+│   │       └── state_updater.py
+│   └── mahoraga/agent.py           Learning (60s poll)
+│       └── skills/
+│           ├── statistical_engine.py
+│           ├── feature_analyzer.py
+│           ├── drift_detector.py
+│           ├── regime_profiler.py
+│           ├── parameter_proposer.py
+│           └── adaptation_reporter.py
+├── core/
+│   ├── constants.py                All tunable parameters
+│   ├── state_manager.py            SQLite wrapper (all DB access here)
+│   ├── metaapi_client.py
+│   └── news_fetcher.py
 ├── scripts/
-│   ├── init_db.py                # Initialize DB with starting balance
-│   ├── backtest_per_model.py     # Combined backtester with realistic friction
-│   │                             #   --fixed-lot 0.01  → pure signal quality (no compounding)
-│   │                             #   --walk-forward    → split period in half, run each
-│   │                             #   --save-csv FILE   → export trade log
-│   ├── debug_model_a.py          # Comprehensive Model A diagnostic
-│   │                             #   WR by session/direction/hour/z-score/half-life
-│   │                             #   max simultaneous trades sensitivity, spread transparency
-│   ├── reset_gojo_session.sh     # Clear GOJO's poisoned WhatsApp session history
-│   └── test_live_execution.py    # Manual live trade execution test (place + close)
-│
-├── deploy/
-│   ├── setup.sh              # One-shot VPS provisioning script
-│   └── supervisord.conf      # Process management for Python agents
-│
-└── tests/                    # 362 tests (315 unit + 47 integration)
+│   ├── init_db.py                  Seed DB before first run
+│   ├── backtest_per_model.py       Validated backtest Jan 2025–Mar 2026
+│   ├── health_check.py
+│   └── diagnose_signals.py
+└── tests/
+    ├── test_comprehensive.py       73 unit tests
+    └── test_e2e.py                 41 integration tests (real SQLite)
 ```
 
 ---
 
-## Setup
-
-### Prerequisites
-- Python 3.11+
-- Node.js 22+
-- MetaApi account + HFM MT5 account (demo or live)
-- DeepSeek API key (deepseek.com)
-- Finnhub API key (free at finnhub.io)
-
-### Local Development
+## Environment Variables
 
 ```bash
-# 1. Clone
-git clone git@github.com:Zahrinnnnn/Honored.git
-cd Honored
-
-# 2. Install Python deps
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# 3. Install OpenClaw
-npm install -g openclaw@latest
-
-# 4. Configure environment
-cp .env.example .env
-# Fill in: META_API_TOKEN, HFM_ACCOUNT_ID, DEEPSEEK_API_KEY, FINNHUB_API_KEY
-
-# 5. Initialize paper DB
-python scripts/init_db.py --balance 20.0
-
-# 6. Set up GOJO workspace
-mkdir -p ~/.openclaw/workspace/skills
-cp gojo/SOUL.md gojo/AGENTS.md gojo/IDENTITY.md gojo/HEARTBEAT.md ~/.openclaw/workspace/
-cp -r gojo/skills/honored-trading ~/.openclaw/workspace/skills/
-
-# 7. Link WhatsApp (scan QR in terminal)
-openclaw channels login --channel whatsapp
-
-# 8. Run in paper mode (default)
-python agents/nanami/agent.py   # PAPER_MODE=true in .env
-```
-
-### VPS Deployment (Ubuntu 22.04)
-
-```bash
-# Upload project to /opt/honored, then:
-bash deploy/setup.sh
-
-# Link WhatsApp once via SSH
-openclaw channels login --channel whatsapp
-
-# Start all agents
-sudo supervisorctl start honored:*
-```
-
-See `deploy/setup.sh` for the full automated provisioning script.
-
----
-
-## GETO Validation (all 11 checks must pass)
-
-```
- 1. session_valid               Trading session is active
- 2. model_priority_ok           Model C exclusive during 07:00–07:30
- 3. regime_and_bias_ok          A→GRIND+direction, B→TIGHT_RANGE, C→H4 bias
- 4. session_trades_within_limit Count < limit (A:8, B:8, C:1/day)
- 5. consecutive_losses_ok       Streak < 3
- 6. drawdown_ok                 DD% < 50%
- 7. news_clear                  Minutes to next event > 30
- 8. spread_acceptable           Spread < $4.00
- 9. not_paused                  pause_flag is False
-10. not_halted                  halt_flag and emergency_halt_flag both False
-11. structural_break_clear      No H1 candle > 3×ATR14 in last 4h
+META_API_TOKEN=
+HFM_ACCOUNT_ID=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+FINNHUB_API_KEY=
+PAPER_MODE=true              # false for live
+ACCOUNT_TYPE=STANDARD        # STANDARD or CENTS
+HONORED_DB_PATH=             # absolute path on VPS
 ```
 
 ---
 
-## Current Deployment
+## Architecture Notes
 
-**VPS:** Hetzner CX23 — Ubuntu 22.04, Helsinki
-**Status:** ✅ Live (`PAPER_MODE=false`) — real orders on HFM demo MT5
-**Starting balance:** $200 USD (HFM demo, STANDARD account)
-**DB:** `/opt/honored/honored.db`
-**Agents:** NANAMI / GETO / TOJI / MAHORAGA under supervisord; GOJO under `openclaw-gateway.service`
-
-```bash
-# Check agents
-supervisorctl status honored:*
-openclaw gateway status
-
-# Restart agents (after constants.py changes)
-supervisorctl restart honored:nanami   # only NANAMI needs restart for OU param changes
-
-# Sync GOJO scripts after local changes
-cp /opt/honored/gojo/skills/honored-trading/scripts/*.py \
-   ~/.openclaw/workspace/skills/honored-trading/scripts/
-```
-
----
-
-## Build Status
-
-| Phase | Agent | Status | Tests |
-|-------|-------|--------|-------|
-| 1 | **Foundation** | ✅ Complete | — |
-| 2 | **NANAMI** | ✅ Complete | 97/97 |
-| 3 | **GETO** | ✅ Complete | 72/72 |
-| 4 | **TOJI** | ✅ Complete | 54/54 |
-| 5 | **GOJO** | ✅ Complete | — |
-| 6 | **MAHORAGA** | ✅ Complete | 68/68 |
-| 7 | **Integration** | ✅ Complete | 47/47 |
-| 8 | **Go Live** | ⬜ Pending | — |
-
-**Total: 362/362 tests passing** (315 unit + 47 integration)
-
----
-
-## Safety
-
-- **LLM only in GOJO** — DeepSeek never touches trade calculations
-- **GETO is pure if/else** — cannot be convinced, cannot hallucinate
-- **MAHORAGA never auto-applies changes** — all recommendations require explicit user approval via WhatsApp
-- **Paper mode default** — `PAPER_MODE=true` until explicitly switched off
-- **News blackout enforced** — Finnhub API unreachable → all trades blocked (fail safe)
-- **Emergency halt** — 50% drawdown locks the system until you personally unlock it
-- **Anti-martingale** — lot halves on each consecutive loss, protecting against drawdown spirals
-
----
-
-*Built with intentional paranoia. Every safety check exists because something could go wrong.*
+- All inter-agent communication is via SQLite (WAL mode, no direct calls)
+- `honored.db` for live, `paper.db` for paper mode (separate files, same schema)
+- TOJI uses lazy MetaApi init to prevent dual-subscription conflict with NANAMI
+- MAHORAGA is zero-LLM — pure statistics, deterministic, no API costs
