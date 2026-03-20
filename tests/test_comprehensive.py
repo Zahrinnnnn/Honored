@@ -108,16 +108,16 @@ class TestLotCalculator:
         self.cc = cc
 
     def test_basic_lot_cents(self):
-        # balance=200 USC, sl=8, risk=10%, PV=100 → lot = 20/800 = 0.025 → 0.03
+        # balance=200 USC, sl=8, risk=5%, PV=100 → lot = 10/800 = 0.0125 → 0.01
         # MetaApi returns balance in USC for CENTS accounts (500 USC = $5 USD)
-        assert self.lc.calculate_lot(200.0, 8.0) == 0.03
+        assert self.lc.calculate_lot(200.0, 8.0) == 0.01
 
     def test_basic_lot_standard(self, monkeypatch):
         monkeypatch.setenv("ACCOUNT_TYPE", "STANDARD")
         import importlib, core.constants as cc, agents.toji.skills.lot_calculator as lc
         importlib.reload(cc); importlib.reload(lc)
-        # lot = 20 / (8 × 100) = 0.025 → 0.03 (POINT_VALUE=100 for both)
-        assert lc.calculate_lot(200.0, 8.0) == 0.03
+        # lot = 10 / (8 × 100) = 0.0125 → 0.01 (POINT_VALUE=100 for both)
+        assert lc.calculate_lot(200.0, 8.0) == 0.01
 
     def test_anti_martingale_1_loss(self):
         # 0.03 / 2^1 = 0.015 → min floor 0.01
@@ -148,7 +148,7 @@ class TestLotCalculator:
         assert self.lc.calculate_lot(200.0, 8.0, risk_pct=0.10) == 0.03
 
     def test_calculate_risk_amount(self):
-        assert self.lc.calculate_risk_amount(200.0) == 20.0  # 200 × 0.10
+        assert self.lc.calculate_risk_amount(200.0) == 10.0  # 200 × 0.05
 
     def test_lot_respects_rr_sizing(self):
         # Smaller SL → larger lot (same risk amount)

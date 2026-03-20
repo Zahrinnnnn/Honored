@@ -61,7 +61,7 @@ SLIPPAGE_VOLATILE = 0.30   # slippage during high-ATR bars
 _ATR_VOLATILE_PCTILE = 80  # ATR percentile threshold for "volatile" spread/slippage
 _WARMUP_M5 = 260
 BUST_THRESHOLD = 0.50  # refill when balance drops below this
-MAX_SIMULTANEOUS_TRADES = 4  # max open trades at once — prevents correlated cluster blowup
+MAX_SIMULTANEOUS_TRADES = 8  # max open trades at once
 DAILY_LOSS_LIMIT_PCT = 0.15  # stop new signals if today's loss exceeds 15% of day-open balance
 
 # ── Opt 2: Breakeven protection raised to +1.5 ATR ─────────────────────────
