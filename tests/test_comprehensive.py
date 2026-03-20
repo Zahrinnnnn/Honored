@@ -108,27 +108,28 @@ class TestLotCalculator:
         self.cc = cc
 
     def test_basic_lot_cents(self):
-        # balance=200, sl=8, risk=20%, PV=1 → lot = 40/8 = 5.0
-        assert self.lc.calculate_lot(200.0, 8.0) == 5.0
+        # balance=200 USC, sl=8, risk=20%, PV=100 → lot = 40/800 = 0.05
+        # MetaApi returns balance in USC for CENTS accounts (500 USC = $5 USD)
+        assert self.lc.calculate_lot(200.0, 8.0) == 0.05
 
     def test_basic_lot_standard(self, monkeypatch):
         monkeypatch.setenv("ACCOUNT_TYPE", "STANDARD")
         import importlib, core.constants as cc, agents.toji.skills.lot_calculator as lc
         importlib.reload(cc); importlib.reload(lc)
-        # lot = 40 / (8 × 100) = 0.05
+        # lot = 40 / (8 × 100) = 0.05 (same formula, POINT_VALUE=100 for both)
         assert lc.calculate_lot(200.0, 8.0) == 0.05
 
     def test_anti_martingale_1_loss(self):
-        # 5.0 / 2^1 = 2.5
-        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=1) == 2.5
+        # 0.05 / 2^1 = 0.025 → round to 0.03
+        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=1) == 0.03
 
     def test_anti_martingale_2_losses(self):
-        # 5.0 / 2^2 = 1.25
-        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=2) == 1.25
+        # 0.05 / 2^2 = 0.0125 → round to 0.01 (min floor)
+        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=2) == 0.01
 
     def test_anti_martingale_3_losses(self):
-        # 5.0 / 2^3 = 0.625 → Python banker's rounding → 0.62
-        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=3) == 0.62
+        # 0.05 / 2^3 = 0.00625 → min floor 0.01
+        assert self.lc.calculate_lot(200.0, 8.0, consecutive_losses=3) == 0.01
 
     def test_min_lot_floor(self):
         lot = self.lc.calculate_lot(0.10, 8.0, consecutive_losses=10)
@@ -143,8 +144,8 @@ class TestLotCalculator:
             self.lc.calculate_lot(0.0, 8.0)
 
     def test_custom_risk_pct(self):
-        # (200 × 0.10) / 8 = 2.5
-        assert self.lc.calculate_lot(200.0, 8.0, risk_pct=0.10) == 2.5
+        # (200 × 0.10) / (8 × 100) = 20/800 = 0.025 → round to 0.03
+        assert self.lc.calculate_lot(200.0, 8.0, risk_pct=0.10) == 0.03
 
     def test_calculate_risk_amount(self):
         assert self.lc.calculate_risk_amount(200.0) == 40.0  # 200 × 0.20
@@ -298,17 +299,18 @@ class TestTradeMonitorExits:
 
     def test_pnl_buy_win_cents(self):
         t = _make_trade("BUY", entry=2500, lot=0.5)
-        # 0.5 × (2512-2500) × PV(1) = 6.0
-        assert self.tm.calculate_pnl(t, 2512.0) == 6.0
+        # 0.5 × (2512-2500) × PV(100) = 600.0 USC
+        assert self.tm.calculate_pnl(t, 2512.0) == 600.0
 
     def test_pnl_sell_win_cents(self):
         t = _make_trade("SELL", entry=2500, lot=0.5)
-        # 0.5 × (2500-2488) × 1 = 6.0
-        assert self.tm.calculate_pnl(t, 2488.0) == 6.0
+        # 0.5 × (2500-2488) × PV(100) = 600.0 USC
+        assert self.tm.calculate_pnl(t, 2488.0) == 600.0
 
     def test_pnl_buy_loss_cents(self):
         t = _make_trade("BUY", entry=2500, lot=0.5)
-        assert self.tm.calculate_pnl(t, 2494.0) == -3.0
+        # 0.5 × (2494-2500) × PV(100) = -300.0 USC
+        assert self.tm.calculate_pnl(t, 2494.0) == -300.0
 
     def test_pnl_zero_lot(self):
         t = _make_trade("BUY", entry=2500, lot=0.0)

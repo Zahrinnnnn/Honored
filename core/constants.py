@@ -4,7 +4,11 @@ import os
 # Account type — XAUUSD contract multiplier
 # ---------------------------------------------------------------------------
 ACCOUNT_TYPE       = os.getenv("ACCOUNT_TYPE", "CENTS").upper()
-XAUUSD_POINT_VALUE = 100 if ACCOUNT_TYPE == "STANDARD" else 1
+# MetaApi returns balance in USC for CENTS accounts (e.g. $5 USD = 500 USC).
+# 1 cent-lot XAUUSD = $1 per $1 gold move = 100 USC per $1 gold move.
+# STANDARD: balance in USD, 1 lot = $100/pt → POINT_VALUE = 100
+# CENTS:    balance in USC, 1 lot = 100 USC/pt → POINT_VALUE = 100 (same)
+XAUUSD_POINT_VALUE = 100
 
 # Risk parameters
 RISK_PER_TRADE_PCT       = 0.20
