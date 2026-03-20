@@ -35,17 +35,17 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 ## Trading Models
 
 ### Model A — `OU_GRIND`
-- **Strategy:** OU mean-reversion on M5 detrended residuals (EMA50 primary z=0.9, EMA21 fallback z=1.3)
-- **Sessions:** `NY_OVERLAP` (12:00–16:00 GMT) + `NY_CLOSE` (19:00–20:00 GMT — entry cutoff at 20:00 UTC)
+- **Strategy:** OU mean-reversion on M5 detrended residuals (EMA50 primary z=0.8, EMA21 fallback z=1.2)
+- **Sessions:** `NY_OVERLAP` (12:00–16:00 GMT) + `NY_CLOSE` (19:00–21:00 GMT — entry cutoff at 20:00 UTC)
 - **Regimes:** `BULLISH_GRIND` (BUY), `BEARISH_GRIND` (SELL), `BULLISH_BLOWOFF` (BUY, z=1.0), `BEARISH_PANIC` (SELL, z=1.0, EMA50 only — mirror of BLOWOFF)
 - **Session limit:** 8 trades per session
-- **Backtest (Jan 2025–Mar 2026):** 63.3% WR, 0.62 trades/day, fixed-lot Sharpe 6.74, Max DD 2.0%
+- **Backtest (Jan 2025–Mar 2026, CENTS $5):** 55.6% WR, 1.12 trades/day, Sharpe 2.71, Max DD 84.5%, 0 busts
 
 ### Model B — `LONDON_REVERSAL`
 - **Strategy:** Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax
-- **Sessions:** `LONDON_OPEN` (07:00–10:00 GMT) — entry blocked before 08:00 UTC
+- **Sessions:** `LONDON_OPEN` (07:00–10:00 GMT) — entry allowed from 07:00 UTC onward
 - **Regimes:** Regime-agnostic; H4 bias filter only (BUY blocked when H4=BEARISH, SELL when H4=BULLISH)
-- **Session limit:** 2 trades per session
+- **Session limit:** 3 trades per session
 - **Time kill:** 120 min (reversals need more room than OU models)
 
 > **No Model C or D.** All alternatives tested and reverted — see Historical Decisions Log.
@@ -60,14 +60,14 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 - All 5 agents are **zero-LLM** — pure Python only
 - MAHORAGA **never** auto-applies parameter changes — all require explicit user approval via Telegram
 - No cap on simultaneous open trades
-- Risk per trade = exactly 20% of current balance (`RISK_PER_TRADE_PCT = 0.20`)
+- Risk per trade = exactly 13% of current balance (`RISK_PER_TRADE_PCT = 0.13`)
 - RR ratio = 1:2 fixed (TP always = SL × 2)
 - Anti-martingale lot sizing: `lot / 2^consecutive_losses`, floor 0.01
 - Breakeven: move SL to entry when profit ≥ 1.5 × ATR (reduces whipsaw breakevens)
 
 ### Model Priority & Sessions
 - **Model A:** NY_OVERLAP + NY_CLOSE. NY_CLOSE entry cutoff at 20:00 UTC (ensures ≥60 min before blackout)
-- **Model B:** LONDON_OPEN only (proven toxic in other sessions). Entry blocked before 08:00 UTC
+- **Model B:** LONDON_OPEN only (proven toxic in other sessions). Entry allowed from 07:00 UTC onward
 - **Model A vs Model B:** Mutually exclusive by session — Model A never fires in LONDON_OPEN
 - **Concurrent trades:** No position cap — multiple trades can be open simultaneously
 
@@ -79,8 +79,8 @@ BOTH NANAMI and GETO own trade count:
 
 ### Risk Hard Stops
 - 50% drawdown → EMERGENCY HALT (only explicit flag reset can unlock)
-- 3 consecutive losses → SOFT HALT (user sends `/override`)
-- News blackout: 30 min before/after high-impact events (Finnhub)
+- 4 consecutive losses → SOFT HALT (user sends `/override`)
+- News blackout: 30 min before/after high-impact events (ForexFactory)
 - Max spread: $4.00
 
 ### Paper Mode
@@ -187,8 +187,8 @@ MAHORAGA: READ trades, account
 checks = {
     "session_valid":               current_session in ALLOWED_SESSIONS,
     "regime_and_bias_ok":          regime_and_bias_allows(model, direction, regime, h4_bias),
-    "session_trades_within_limit": session_trade_count(model) < limit,  # A:8, B:2
-    "consecutive_losses_ok":       consecutive_losses < 3,
+    "session_trades_within_limit": session_trade_count(model) < limit,  # A:8, B:3
+    "consecutive_losses_ok":       consecutive_losses < 4,
     "drawdown_ok":                 current_dd_pct < 50.0,
     "news_clear":                  minutes_to_next_news > 30,
     "spread_acceptable":           current_spread < 4.00,
@@ -316,9 +316,9 @@ honored/
 
 ```python
 # Risk
-RISK_PER_TRADE_PCT      = 0.20       # 20% of balance per trade
+RISK_PER_TRADE_PCT      = 0.13       # 13% of balance per trade
 MAX_DRAWDOWN_PCT        = 0.50
-MAX_CONSECUTIVE_LOSSES  = 3
+MAX_CONSECUTIVE_LOSSES  = 4
 NEWS_BLACKOUT_MINUTES   = 30
 MAX_SPREAD_DOLLARS      = 4.0
 
@@ -340,8 +340,8 @@ STRUCTURAL_BREAK_ATR_MULT       = 3.0    # single H1 candle > 3×ATR → halt
 STRUCTURAL_BREAK_COOLDOWN_HOURS = 4
 
 # OU Model Parameters (Model A)
-OU_ZSCORE_GRIND_THRESHOLD   = 0.9    # EMA50 primary detrend
-OU_ZSCORE_ENTRY_THRESHOLD   = 1.3    # EMA21 fallback detrend
+OU_ZSCORE_GRIND_THRESHOLD   = 0.8    # EMA50 primary detrend
+OU_ZSCORE_ENTRY_THRESHOLD   = 1.2    # EMA21 fallback detrend
 OU_ZSCORE_BLOWOFF_THRESHOLD = 1.0    # blowoff mode (stricter)
 OU_MIN_HALF_LIFE            = 3
 OU_MAX_HALF_LIFE            = 50
@@ -365,12 +365,12 @@ MODEL_B = "LONDON_REVERSAL"
 
 MODEL_SESSION_LIMITS = {
     MODEL_A: 8,   # per session
-    MODEL_B: 2,   # per session
+    MODEL_B: 3,   # per session
 }
 
 MODEL_SESSIONS = {
     MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],  # NY_CLOSE entry cutoff at 20:00 UTC
-    MODEL_B: ["LONDON_OPEN"],             # entry blocked before 08:00 UTC
+    MODEL_B: ["LONDON_OPEN"],             # entry allowed from 07:00 UTC onward
 }
 ```
 
@@ -392,7 +392,7 @@ def calculate_lot(balance: float, sl_distance: float,
     return max(lot, 0.01)
 ```
 
-`XAUUSD_POINT_VALUE = 100` for STANDARD account, `1` for CENTS account.
+`XAUUSD_POINT_VALUE = 100` for both STANDARD and CENTS accounts (MetaApi returns CENTS balance in USC; 1 cent-lot = 100 USC per $1 gold move).
 
 ---
 
@@ -587,7 +587,7 @@ PHASE 8 ⬜ PENDING    Go Live
 - Never commit `.env`, `honored.db`, or `paper.db`
 - All SQLite access goes through `core/state_manager.py` — never raw `sqlite3` in agent code
 - All MetaApi access goes through `core/metaapi_client.py`
-- News calendar calls go through `core/news_fetcher.py` — Finnhub only
+- News calendar calls go through `core/news_fetcher.py` — ForexFactory XML feed (no API key)
 - Every skill file must be independently testable — no circular imports
 - Indicator calculations use the `ta` library; implement manually only if `ta` lacks it
 - Tests use real temp SQLite (no mocks for DB) — never hit real MetaApi in tests
@@ -610,8 +610,12 @@ PHASE 8 ⬜ PENDING    Go Live
 | Model D (INTRADAY_MOM) built and reverted | 45% WR at 1:2 RR = positive fixed-lot EV, but at 20% compounding the 55% loss rate creates catastrophic drawdowns during high-balance periods (-$36k on $51k account). Not viable with current risk settings |
 | TIGHT_RANGE regime tested for Model A | 29% WR on 278 trades — anti-edge. No macro anchor means residuals don't mean-revert reliably. 111 TIME_KILL exits (price drifts sideways without reaching TP or SL) |
 | LONDON_OPEN tested for Model A | 29% WR on 210 trades — European session has different flow structure; OU mean-reversion doesn't hold. LONDON_OPEN left exclusively to Model B |
+| `OU_ZSCORE_GRIND_THRESHOLD = 0.8` | Middle ground between 0.9 (62% WR, 0.69/day) and 0.7 (53% WR, 1.35/day). At 0.8: 55.6% WR, 1.12/day — hits 1/day target with acceptable quality |
+| `MAX_CONSECUTIVE_LOSSES = 4` | Raised from 3 — at 55% WR the soft halt fires too frequently at 3, blocking valid setups |
+| `LONDON_REVERSAL session limit = 3` | Raised from 2 — allowed entry from 07:00 UTC (was 08:00), more setups available |
+| `XAUUSD_POINT_VALUE = 100` for CENTS | MetaApi returns CENTS balance in USC. 1 cent-lot XAUUSD = 100 USC per $1 gold move — same formula as STANDARD |
 | BEARISH_PANIC added to Model A (SELL only) | Mirror of BULLISH_BLOWOFF. 5/5 wins in backtest, EMA50 only, z=1.0, parabola gate, tighter half-life cap. Highly selective but adds genuine edge during freefall regimes |
-| `RISK_PER_TRADE_PCT = 0.20` | User preference — 20% risk per trade on this specific account |
+| `RISK_PER_TRADE_PCT = 0.13` | Backtested optimal — 13% balances compounding vs bust risk on CENTS $5 account. Tested 5/10/13/14/15/23% — 13% had highest final balance with 0 busts |
 | `BREAKEVEN_ATR_THRESHOLD = 1.5` | Raised from 1.0 to reduce whipsaw breakeven exits |
 | `OU_TIME_KILL_HALF_LIFE_MULT = 3` | Extended from 2 — gives OU process more time to mean-revert |
 | TOJI lazy MetaApi init (`connection = None` at startup) | Prevents dual-subscription conflict with NANAMI |
