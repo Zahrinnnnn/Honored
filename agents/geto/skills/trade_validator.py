@@ -42,6 +42,7 @@ from core.constants import (
     REGIME_BULLISH_GRIND,
     REGIME_BEARISH_GRIND,
     REGIME_BULLISH_BLOWOFF,
+    REGIME_BEARISH_PANIC,
 )
 from core.state_manager import StateManager
 from agents.geto.skills.account_monitor import get_account_snapshot
@@ -92,7 +93,7 @@ def _regime_and_bias_ok(
 
     Model A (OU Grind):
         BUY  → regime in {BULLISH_GRIND, BULLISH_BLOWOFF} AND h4_bias != BEARISH
-        SELL → regime == BEARISH_GRIND AND h4_bias != BULLISH
+        SELL → regime in {BEARISH_GRIND, BEARISH_PANIC} AND h4_bias != BULLISH
 
     Model B (London Reversal):
         Regime-agnostic — H4 bias gate only:
@@ -103,7 +104,7 @@ def _regime_and_bias_ok(
         if direction == "BUY":
             return regime in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF) and h4_bias != "BEARISH"
         if direction == "SELL":
-            return regime == REGIME_BEARISH_GRIND and h4_bias != "BULLISH"
+            return regime in (REGIME_BEARISH_GRIND, REGIME_BEARISH_PANIC) and h4_bias != "BULLISH"
         return False
 
     if model == MODEL_B:

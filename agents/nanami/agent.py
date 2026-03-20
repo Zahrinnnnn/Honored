@@ -39,7 +39,7 @@ from core.constants import (  # noqa: E402
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
     REGIME_H1_BARS_NEEDED,
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND,
-    REGIME_BULLISH_BLOWOFF, NO_TRADE_REGIMES,
+    REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC, NO_TRADE_REGIMES,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
 )
 from core.state_manager import StateManager  # noqa: E402
@@ -177,8 +177,8 @@ async def _poll(state: StateManager):
     if session in MODEL_SESSIONS[MODEL_B]:
         signal = await _try_model_b(state, df_m5, session, macro_bias)
 
-    # ── Model A: OU grind — GRIND + BULLISH_BLOWOFF, NY sessions ─────────────
-    if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF):
+    # ── Model A: OU grind — GRIND + BLOWOFF + PANIC, NY sessions ────────────
+    if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
         if session in MODEL_SESSIONS[MODEL_A]:
             utc_hour = datetime.now(timezone.utc).hour
             # NY_CLOSE entry cutoff: block after 20:00 UTC — ensures ≥60 min before blackout
