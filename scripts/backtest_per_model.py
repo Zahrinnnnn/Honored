@@ -251,12 +251,14 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
 
 def _open_trade(signal, bar, state, slippage: float = 0.0, fixed_lot: float = None):
     sl_distance_points = float(signal["sl_distance"])
-    # The lot calculator expects sl_distance in USD for 1 lot.
-    sl_distance_usd_per_lot = sl_distance_points * XAUUSD_POINT_VALUE
+    # calculate_lot expects sl_distance as a raw price-unit distance (USD per oz).
+    # It applies XAUUSD_POINT_VALUE internally: lot = risk / (sl_distance × point_value).
+    # Do NOT pre-multiply here — that would double-count XAUUSD_POINT_VALUE and floor
+    # every STANDARD trade to the 0.01 minimum lot, killing compounding.
     if fixed_lot is not None:
         lot = fixed_lot  # Fixed-lot mode: bypass anti-martingale compounding
     else:
-        lot = calculate_lot(state["balance"], sl_distance_usd_per_lot, consecutive_losses=state["consecutive_losses"])
+        lot = calculate_lot(state["balance"], sl_distance_points, consecutive_losses=state["consecutive_losses"])
     entry = float(signal["entry_price"])
 
     # Apply slippage: BUY fills higher, SELL fills lower (adverse)
@@ -596,11 +598,13 @@ def run_monte_carlo(trades: list, start_balance: float, n_sims: int = 2000):
         raw_per_lot    = price_move * XAUUSD_POINT_VALUE
         lot            = t["lot_size"]
         spread_per_lot = (t["spread_cost"] / lot) if lot > 0 else 0.0
-        sl_usd_per_lot = t["sl_distance"] * XAUUSD_POINT_VALUE
+        # Store raw price-unit SL distance — calculate_lot applies XAUUSD_POINT_VALUE
+        # internally, so do NOT pre-multiply here (same fix as _open_trade).
+        sl_distance    = t["sl_distance"]
         trade_units.append({
             "raw_per_lot":    raw_per_lot,
             "spread_per_lot": spread_per_lot,
-            "sl_usd_per_lot": sl_usd_per_lot,
+            "sl_distance":    sl_distance,
             "result":         t["result"],
         })
 
@@ -618,7 +622,7 @@ def run_monte_carlo(trades: list, start_balance: float, n_sims: int = 2000):
         consec_losses = 0
 
         for unit in shuffled:
-            lot = calculate_lot(bal, unit["sl_usd_per_lot"],
+            lot = calculate_lot(bal, unit["sl_distance"],
                                 consecutive_losses=consec_losses)
             pnl = round(lot * unit["raw_per_lot"] - lot * unit["spread_per_lot"], 4)
             bal += pnl
