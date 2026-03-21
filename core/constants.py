@@ -14,7 +14,7 @@ XAUUSD_POINT_VALUE = 100
 SYMBOL = "XAUUSDc" if ACCOUNT_TYPE == "CENTS" else "XAUUSD"
 
 # Risk parameters
-RISK_PER_TRADE_PCT       = 0.13
+RISK_PER_TRADE_PCT       = 0.15
 MAX_DRAWDOWN_PCT         = 0.50
 MAX_CONSECUTIVE_LOSSES   = 4
 NEWS_BLACKOUT_MINUTES    = 30
@@ -72,8 +72,8 @@ MAX_TRADE_DURATION_MINUTES   = 240    # Hard cap: 4 hours
 # ─────────────────────────────────────────────────────────────────────────────
 # OU Model Parameters (Model A)
 # ─────────────────────────────────────────────────────────────────────────────
-OU_ZSCORE_ENTRY_THRESHOLD = 1.2   # |ou_z| > 1.2 to enter (EMA21 fallback)
-OU_ZSCORE_GRIND_THRESHOLD = 0.8   # |ou_z| > 0.8 for Model A primary (EMA50)
+OU_ZSCORE_ENTRY_THRESHOLD = 1.3   # |ou_z| > 1.3 to enter (EMA21 fallback)
+OU_ZSCORE_GRIND_THRESHOLD = 0.9   # |ou_z| > 0.9 for Model A primary (EMA50)
 OU_MIN_HALF_LIFE          = 3     # bars minimum half-life
 OU_MAX_HALF_LIFE          = 50    # bars
 OU_LOOKBACK               = 80    # bars for OU window (EMA50 detrend)
@@ -86,7 +86,7 @@ OU_TIME_KILL_HALF_LIFE_MULT = 3   # gives OU process more time to mean-revert
 OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
 OU_SL_MAX                 = 12.0  # $12 maximum SL distance
-ADF_P_VALUE_THRESHOLD     = 0.15  # ADF significance threshold
+ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance threshold
 M5_MAX_TRADES_PER_SESSION = 8     # Model A session limit
 NY_OVERLAP_DEAD_HOUR_START = 14   # 14:00 UTC — dead zone start (US midday)
 NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
@@ -131,7 +131,7 @@ ALERT_POLL_INTERVAL   = 60
 # ─────────────────────────────────────────────────────────────────────────────
 HURST_WINDOW             = 200
 ATR_VOLATILE_MULTIPLIER  = 2.0
-HURST_TRENDING_THRESHOLD = 0.59  # Hurst trending threshold
+HURST_TRENDING_THRESHOLD = 0.53  # Hurst trending threshold
 HURST_RANGING_THRESHOLD  = 0.35
 MODEL_A_KALMAN_Q_SCALE   = 0.01
 MODEL_A_ZSCORE_LOOKBACK  = 50
