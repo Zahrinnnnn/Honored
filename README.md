@@ -21,15 +21,15 @@ Five async Python agents, zero-LLM, SQLite shared state, Telegram interface.
 
 ### Model A — OU_GRIND
 Mean-reversion on M5 detrended residuals using Ornstein-Uhlenbeck process.
-- **Sessions:** NY_OVERLAP (12:00–16:00 UTC), NY_CLOSE (19:00–20:00 UTC)
+- **Sessions:** NY_OVERLAP (12:00–16:00 UTC), NY_CLOSE (19:00–21:00 UTC, entry cutoff 20:00 UTC)
 - **Regimes:** BULLISH_GRIND (BUY), BEARISH_GRIND (SELL), BULLISH_BLOWOFF (BUY), BEARISH_PANIC (SELL)
 - **Session cap:** 8 trades
-- **Backtest:** 63.3% WR, 0.62 trades/day, Sharpe 6.74, Max DD 2.0% (Jan 2025 – Mar 2026, fixed-lot)
+- **Backtest:** 61.2% WR, 0.54 trades/day (2025, compounding 15% risk, $5 start → $1,593)
 
 ### Model B — LONDON_REVERSAL
 Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax.
-- **Session:** LONDON_OPEN (08:00–10:00 UTC, entry blocked before 08:00)
-- **Session cap:** 2 trades
+- **Session:** LONDON_OPEN (07:00–10:00 UTC, entry allowed from 07:00 UTC)
+- **Session cap:** 3 trades
 - **Minimum score:** 3 points (Kalman flip mandatory + at least 1 confirmation)
 
 ---
@@ -38,12 +38,12 @@ Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + v
 
 | Parameter | Value |
 |-----------|-------|
-| Risk per trade | 20% of balance |
+| Risk per trade | 15% of balance |
 | RR ratio | 1:2 fixed |
 | SL | 1.5 × ATR14, clamped $6–$12 |
 | Anti-martingale | lot ÷ 2^consecutive_losses |
 | Breakeven | Move SL to entry at +1.5 × ATR profit |
-| 3 consecutive losses | Soft halt — `/override` to resume |
+| 4 consecutive losses | Soft halt — `/override` to resume |
 | 50% drawdown | Emergency halt — manual flag reset |
 | News blackout | 30 min before/after high-impact events |
 | Max spread | $4.00 |
@@ -60,7 +60,7 @@ pip install -r requirements.txt
 # 2. Configure
 cp .env.example .env
 # Fill in: META_API_TOKEN, HFM_ACCOUNT_ID, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-#          FINNHUB_API_KEY, PAPER_MODE, ACCOUNT_TYPE, HONORED_DB_PATH
+#          PAPER_MODE, ACCOUNT_TYPE, HONORED_DB_PATH
 
 # 3. Initialise database
 python scripts/init_db.py --balance 200
@@ -179,10 +179,10 @@ META_API_TOKEN=
 HFM_ACCOUNT_ID=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
-FINNHUB_API_KEY=
 PAPER_MODE=true              # false for live
 ACCOUNT_TYPE=STANDARD        # STANDARD or CENTS
 HONORED_DB_PATH=             # absolute path on VPS
+# News: ForexFactory XML feed — no API key required
 ```
 
 ---

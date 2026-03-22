@@ -60,7 +60,7 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 - All 5 agents are **zero-LLM** — pure Python only
 - MAHORAGA **never** auto-applies parameter changes — all require explicit user approval via Telegram
 - No cap on simultaneous open trades
-- Risk per trade = exactly 13% of current balance (`RISK_PER_TRADE_PCT = 0.13`)
+- Risk per trade = exactly 15% of current balance (`RISK_PER_TRADE_PCT = 0.15`)
 - RR ratio = 1:2 fixed (TP always = SL × 2)
 - Anti-martingale lot sizing: `lot / 2^consecutive_losses`, floor 0.01
 - Breakeven: move SL to entry when profit ≥ 1.5 × ATR (reduces whipsaw breakevens)
@@ -316,7 +316,7 @@ honored/
 
 ```python
 # Risk
-RISK_PER_TRADE_PCT      = 0.13       # 13% of balance per trade
+RISK_PER_TRADE_PCT      = 0.15       # 15% of balance per trade
 MAX_DRAWDOWN_PCT        = 0.50
 MAX_CONSECUTIVE_LOSSES  = 4
 NEWS_BLACKOUT_MINUTES   = 30
@@ -615,7 +615,7 @@ PHASE 8 ⬜ PENDING    Go Live
 | `LONDON_REVERSAL session limit = 3` | Raised from 2 — allowed entry from 07:00 UTC (was 08:00), more setups available |
 | `XAUUSD_POINT_VALUE = 100` for CENTS | MetaApi returns CENTS balance in USC. 1 cent-lot XAUUSD = 100 USC per $1 gold move — same formula as STANDARD |
 | BEARISH_PANIC added to Model A (SELL only) | Mirror of BULLISH_BLOWOFF. 5/5 wins in backtest, EMA50 only, z=1.0, parabola gate, tighter half-life cap. Highly selective but adds genuine edge during freefall regimes |
-| `RISK_PER_TRADE_PCT = 0.13` | Backtested optimal — 13% balances compounding vs bust risk on CENTS $5 account. Tested 5/10/13/14/15/23% — 13% had highest final balance with 0 busts |
+| `RISK_PER_TRADE_PCT = 0.15` | Backtested on CENTS $5 account across 2025–2026. 5%→$43, 13%→$89 (0 busts), 14%→$1,211 (1 bust), 15%→$1,593 (1 bust), 23%→$6,273 (2 busts). 15% chosen: best compounding with only 1 bust (July 2025 losing streak), same bust count as 14% but $383 higher year-end. Bust requires $5 top-up once mid-year. |
 | `BREAKEVEN_ATR_THRESHOLD = 1.5` | Raised from 1.0 to reduce whipsaw breakeven exits |
 | `OU_TIME_KILL_HALF_LIFE_MULT = 3` | Extended from 2 — gives OU process more time to mean-revert |
 | TOJI lazy MetaApi init (`connection = None` at startup) | Prevents dual-subscription conflict with NANAMI |
