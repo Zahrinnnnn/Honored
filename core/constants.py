@@ -101,7 +101,7 @@ LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 3   # relaxed to allow more setups
 
 MODEL_SESSION_LIMITS = {
     MODEL_A: M5_MAX_TRADES_PER_SESSION,               # 8 per session
-    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION,  # 2 per session (backtest-validated)
+    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION,  # 3 per session
 }
 
 MODEL_SESSIONS = {

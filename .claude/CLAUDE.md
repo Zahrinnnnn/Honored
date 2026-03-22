@@ -43,7 +43,7 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 
 ### Model B — `LONDON_REVERSAL`
 - **Strategy:** Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax
-- **Sessions:** `LONDON_OPEN` (07:00–10:00 GMT) — entry allowed from 07:00 UTC onward
+- **Sessions:** `LONDON_OPEN` (07:30–10:00 GMT) — entry from 07:30 UTC (07:00–07:30 is LONDON_BREAKOUT, no model fires there)
 - **Regimes:** Regime-agnostic; H4 bias filter only (BUY blocked when H4=BEARISH, SELL when H4=BULLISH)
 - **Session limit:** 3 trades per session
 - **Time kill:** 120 min (reversals need more room than OU models)
@@ -67,7 +67,7 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 
 ### Model Priority & Sessions
 - **Model A:** NY_OVERLAP + NY_CLOSE. NY_CLOSE entry cutoff at 20:00 UTC (ensures ≥60 min before blackout)
-- **Model B:** LONDON_OPEN only (proven toxic in other sessions). Entry allowed from 07:00 UTC onward
+- **Model B:** LONDON_OPEN only (proven toxic in other sessions). Entry from 07:30 UTC (07:00–07:30 = LONDON_BREAKOUT window, blocked)
 - **Model A vs Model B:** Mutually exclusive by session — Model A never fires in LONDON_OPEN
 - **Concurrent trades:** No position cap — multiple trades can be open simultaneously
 
@@ -340,8 +340,8 @@ STRUCTURAL_BREAK_ATR_MULT       = 3.0    # single H1 candle > 3×ATR → halt
 STRUCTURAL_BREAK_COOLDOWN_HOURS = 4
 
 # OU Model Parameters (Model A)
-OU_ZSCORE_GRIND_THRESHOLD   = 0.8    # EMA50 primary detrend
-OU_ZSCORE_ENTRY_THRESHOLD   = 1.2    # EMA21 fallback detrend
+OU_ZSCORE_GRIND_THRESHOLD   = 0.9    # EMA50 primary detrend
+OU_ZSCORE_ENTRY_THRESHOLD   = 1.3    # EMA21 fallback detrend
 OU_ZSCORE_BLOWOFF_THRESHOLD = 1.0    # blowoff mode (stricter)
 OU_MIN_HALF_LIFE            = 3
 OU_MAX_HALF_LIFE            = 50
@@ -610,7 +610,7 @@ PHASE 8 ⬜ PENDING    Go Live
 | Model D (INTRADAY_MOM) built and reverted | 45% WR at 1:2 RR = positive fixed-lot EV, but at 20% compounding the 55% loss rate creates catastrophic drawdowns during high-balance periods (-$36k on $51k account). Not viable with current risk settings |
 | TIGHT_RANGE regime tested for Model A | 29% WR on 278 trades — anti-edge. No macro anchor means residuals don't mean-revert reliably. 111 TIME_KILL exits (price drifts sideways without reaching TP or SL) |
 | LONDON_OPEN tested for Model A | 29% WR on 210 trades — European session has different flow structure; OU mean-reversion doesn't hold. LONDON_OPEN left exclusively to Model B |
-| `OU_ZSCORE_GRIND_THRESHOLD = 0.8` | Middle ground between 0.9 (62% WR, 0.69/day) and 0.7 (53% WR, 1.35/day). At 0.8: 55.6% WR, 1.12/day — hits 1/day target with acceptable quality |
+| `OU_ZSCORE_GRIND_THRESHOLD = 0.9` | Raised from 0.8 (55.6% WR, 1.12/day) to 0.9 (62% WR, 0.54/day) — higher quality signals at cost of frequency. 0.9 matches optimal backtest params (z=0.9/1.3). |
 | `MAX_CONSECUTIVE_LOSSES = 4` | Raised from 3 — at 55% WR the soft halt fires too frequently at 3, blocking valid setups |
 | `LONDON_REVERSAL session limit = 3` | Raised from 2 — allowed entry from 07:00 UTC (was 08:00), more setups available |
 | `XAUUSD_POINT_VALUE = 100` for CENTS | MetaApi returns CENTS balance in USC. 1 cent-lot XAUUSD = 100 USC per $1 gold move — same formula as STANDARD |

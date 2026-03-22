@@ -86,7 +86,7 @@ _MODEL_SESSIONS = {
 }
 _SESSION_LIMIT = {
     MODEL_A: 8,   # per session
-    MODEL_B: 2,   # per session
+    MODEL_B: 3,   # per session — matches LONDON_REVERSAL_MAX_TRADES_PER_SESSION in constants.py
 }
 
 
@@ -402,8 +402,7 @@ def _try_exit_rr(trade, bar, bar_dt):
     # Time kill per model:
     #   Model A: OU-calibrated (3 × half_life × 5 min), fallback 60 min
     #   Model B: 120 min (London reversals need room)
-    #   Model C: 90 min (trend trades need more room than OU)
-    #   Model D: 120 min (momentum continuation needs room)
+    #   (Model C and D reverted — not in live system)
     half_life = float(trade.get("half_life_bars", 0.0))
     model = trade.get("model", "")
     if half_life > 0:

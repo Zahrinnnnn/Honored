@@ -28,7 +28,7 @@ Mean-reversion on M5 detrended residuals using Ornstein-Uhlenbeck process.
 
 ### Model B — LONDON_REVERSAL
 Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax.
-- **Session:** LONDON_OPEN (07:00–10:00 UTC, entry allowed from 07:00 UTC)
+- **Session:** LONDON_OPEN (07:30–10:00 UTC — 07:00–07:30 is LONDON_BREAKOUT window, no model fires)
 - **Session cap:** 3 trades
 - **Minimum score:** 3 points (Kalman flip mandatory + at least 1 confirmation)
 - **Backtest (2025, Model B only):** 53% WR, 0.1 trades/day
