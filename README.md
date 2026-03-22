@@ -24,13 +24,16 @@ Mean-reversion on M5 detrended residuals using Ornstein-Uhlenbeck process.
 - **Sessions:** NY_OVERLAP (12:00–16:00 UTC), NY_CLOSE (19:00–21:00 UTC, entry cutoff 20:00 UTC)
 - **Regimes:** BULLISH_GRIND (BUY), BEARISH_GRIND (SELL), BULLISH_BLOWOFF (BUY), BEARISH_PANIC (SELL)
 - **Session cap:** 8 trades
-- **Backtest:** 61.2% WR, 0.54 trades/day (2025, compounding 15% risk, $5 start → $1,593)
+- **Backtest (2025, Model A only):** 62% WR, 0.54 trades/day, Sharpe 1.74
 
 ### Model B — LONDON_REVERSAL
 Fakeout/reversal model using Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax.
 - **Session:** LONDON_OPEN (07:00–10:00 UTC, entry allowed from 07:00 UTC)
 - **Session cap:** 3 trades
 - **Minimum score:** 3 points (Kalman flip mandatory + at least 1 confirmation)
+- **Backtest (2025, Model B only):** 53% WR, 0.1 trades/day
+
+**Combined A+B backtest (2025, 15% risk, $5 start):** 61.2% WR, 0.64 trades/day, Sharpe 1.64, $5 → $1,593, 1 bust (July)
 
 ---
 
