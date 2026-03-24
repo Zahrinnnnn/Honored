@@ -7,6 +7,7 @@ Returns an enriched copy; never modifies in-place.
 Indicators
 ──────────
   ema21           EMA 21-period (Model A EMA21 fallback detrend)
+  ema34           EMA 34-period (Model A EMA34 middle detrend)
   ema50           EMA 50-period (Model A primary detrend)
   atr14           Average True Range 14-period (SL calc + volatility gates)
   kalman_velocity Kalman filter velocity (momentum_blowoff direction gate)
@@ -22,7 +23,7 @@ import ta.volatility
 from agents.nanami.skills.stat_tests import KalmanPriceFilter
 
 
-_INDICATOR_COLS = ("ema21", "ema50", "atr14", "kalman_velocity")
+_INDICATOR_COLS = ("ema21", "ema34", "ema50", "atr14", "kalman_velocity")
 
 _MIN_ROWS = 60
 
@@ -50,6 +51,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── Exponential Moving Averages ──────────────────────────────────────────
     df["ema21"] = ta.trend.ema_indicator(close, window=21, fillna=False)
+    df["ema34"] = ta.trend.ema_indicator(close, window=34, fillna=False)
     df["ema50"] = ta.trend.ema_indicator(close, window=50, fillna=False)
 
     # ── ATR ──────────────────────────────────────────────────────────────────

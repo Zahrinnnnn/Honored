@@ -37,6 +37,7 @@ from core.constants import (
     HURST_TRENDING_THRESHOLD,
     MODEL_A,
     OU_LOOKBACK,
+    OU_LOOKBACK_MID,
     OU_LOOKBACK_SHORT,
     OU_MAX_HALF_LIFE,
     OU_MAX_HALF_LIFE_BLOWOFF,
@@ -45,6 +46,7 @@ from core.constants import (
     OU_SL_MAX,
     OU_SL_MIN,
     OU_ZSCORE_BLOWOFF_THRESHOLD,
+    OU_ZSCORE_EMA34_THRESHOLD,
     OU_ZSCORE_ENTRY_THRESHOLD,
     OU_ZSCORE_GRIND_THRESHOLD,
     REGIME_BEARISH_GRIND,
@@ -190,8 +192,8 @@ def generate_signal(
                                      "ema50_blowoff", hurst_val)
         return None  # blowoff: EMA50 only, no fallback
 
-    # ── GRIND mode: EMA50 primary, EMA21 fallback ─────────────────────────
-    # EMA50 detrend (primary — z=1.0)
+    # ── GRIND mode: EMA50 primary → EMA34 middle → EMA21 fallback ────────
+    # EMA50 detrend (primary — z=0.9, lookback=80)
     ema50_col = df_m5.get("ema50")
     if ema50_col is not None and not pd.isna(last_bar.get("ema50", float("nan"))):
         ema50_arr = ema50_col.values.astype(float)
@@ -200,7 +202,18 @@ def generate_signal(
         if result:
             return _build_signal(result, df_m5, atr, session, regime, "ema50", hurst_val)
 
-    # EMA21 detrend (fallback — stricter z=1.3, shorter window)
+    # EMA34 detrend (middle — z=1.0, lookback=60)
+    ema34_col = df_m5.get("ema34")
+    if ema34_col is not None and not pd.isna(last_bar.get("ema34", float("nan"))):
+        ema34_arr = ema34_col.values.astype(float)
+        if len(closes) >= OU_LOOKBACK_MID:
+            result = _try_ou(closes, ema34_arr, OU_LOOKBACK_MID, regime,
+                             z_threshold=OU_ZSCORE_EMA34_THRESHOLD)
+            if result:
+                return _build_signal(result, df_m5, atr, session, regime,
+                                     "ema34", hurst_val)
+
+    # EMA21 detrend (fallback — z=1.3, lookback=40)
     ema21_col = df_m5.get("ema21")
     if ema21_col is not None and not pd.isna(last_bar.get("ema21", float("nan"))):
         ema21_arr = ema21_col.values.astype(float)
