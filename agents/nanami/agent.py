@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
 from core.constants import (  # noqa: E402
-    MODEL_A,
+    MODEL_A, MODEL_C,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
     REGIME_H1_BARS_NEEDED,
@@ -50,6 +50,7 @@ from agents.nanami.skills import (  # noqa: E402
     indicator_engine,
     session_detector,
     ou_grind,
+    london_trend,
 )
 from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
@@ -172,10 +173,15 @@ async def _poll(state: StateManager):
         logger.debug("Signal APPROVED and awaiting TOJI — skipping new signal generation")
         return
 
-    # ── 9. Signal generation — priority: B → A ───────────────────────────────
+    # ── 9. Signal generation — priority: C → A ───────────────────────────────
     signal = None
 
     # Model B (LONDON_REVERSAL) disabled — net negative in 2025 backtest (-$21k)
+
+    # ── Model C: London trend — GRIND only, LONDON_OPEN 07:00–09:00 UTC ─────
+    if signal is None and session in MODEL_SESSIONS[MODEL_C]:
+        if regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND):
+            signal = await _try_model_c(state, df_m5, session, regime, h4_bias)
 
     # ── Model A: OU grind — GRIND + BLOWOFF + PANIC, NY sessions ────────────
     if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
@@ -208,6 +214,19 @@ async def _poll(state: StateManager):
 # ---------------------------------------------------------------------------
 # Per-model helpers
 # ---------------------------------------------------------------------------
+
+
+async def _try_model_c(state: StateManager, df_m5, session: str, regime: str, h4_bias: str = "NEUTRAL"):
+    """Check session limit, run Model C (London trend breakout)."""
+    count = await state.get_session_trade_count(session, MODEL_C)
+    if count >= MODEL_SESSION_LIMITS[MODEL_C]:
+        logger.debug(
+            "Model C session limit reached (%d/%d) for %s",
+            count, MODEL_SESSION_LIMITS[MODEL_C], session,
+        )
+        return None
+
+    return london_trend.generate_signal(df_m5, session, regime, h4_bias=h4_bias)
 
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, h4_bias: str = "NEUTRAL"):
