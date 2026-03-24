@@ -24,9 +24,8 @@ from typing import Optional
 from core.constants import (
     BREAKEVEN_ATR_THRESHOLD,
     MAX_TRADE_DURATION_MINUTES,
-    MODEL_A, MODEL_B,
+    MODEL_A,
     MODEL_A_TIME_KILL_MINUTES,
-    MODEL_B_TIME_KILL_MINUTES,
     OU_TIME_KILL_HALF_LIFE_MULT,
     TIME_KILL_MINUTES,
     XAUUSD_POINT_VALUE,
@@ -130,14 +129,11 @@ def check_exit(
 
     # Time kill — per-model:
     #   Model A (OU): 3 × half_life_bars × 5 min; fallback MODEL_A_TIME_KILL_MINUTES
-    #   Model B (London reversal): MODEL_B_TIME_KILL_MINUTES (120 min — reversals need room)
     #   Other: TIME_KILL_MINUTES (60 min)
     model     = trade.get("model", "")
     half_life = float(trade.get("half_life_bars", 0.0))
     if half_life > 0:
         time_kill_mins = half_life * OU_TIME_KILL_HALF_LIFE_MULT * 5.0
-    elif model == MODEL_B:
-        time_kill_mins = MODEL_B_TIME_KILL_MINUTES
     elif model == MODEL_A:
         time_kill_mins = MODEL_A_TIME_KILL_MINUTES
     else:

@@ -38,7 +38,6 @@ from core.constants import (
     MAHORAGA_WEEKLY_RUN_DAY,
     MIN_TRADES_FOR_ANALYSIS,
     MODEL_A,
-    MODEL_B,
 )
 from core.state_manager import StateManager
 
@@ -64,7 +63,7 @@ _DAILY_HOUR    = int(MAHORAGA_DAILY_RUN_TIME.split(":")[0])
 _DAILY_MINUTE  = int(MAHORAGA_DAILY_RUN_TIME.split(":")[1])
 _MICRO_TRIGGER_EVERY = 5   # run drift check every N new completed trades
 _PAPER_MODE    = os.environ.get("PAPER_MODE", "true").lower() == "true"
-_MODELS        = [MODEL_A, MODEL_B]
+_MODELS        = [MODEL_A]
 
 
 # ── schedule helpers ──────────────────────────────────────────────────────────

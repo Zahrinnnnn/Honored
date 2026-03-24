@@ -37,10 +37,8 @@ from agents.mahoraga.skills.regime_profiler import (
 from agents.mahoraga.skills.statistical_engine import compute_model_stats, compute_stats
 from core.constants import (
     BREAKEVEN_ATR_THRESHOLD,
-    LONDON_REVERSAL_MAX_TRADES_PER_SESSION,
     M5_MAX_TRADES_PER_SESSION,
     MODEL_A,
-    MODEL_B,
     OU_ZSCORE_ENTRY_THRESHOLD,
     OU_ZSCORE_GRIND_THRESHOLD,
 )
@@ -65,7 +63,7 @@ def compile_report(
         Full report dict — stored in mahoraga_state.last_report.
     """
     closed = [t for t in trades if t.get("result")]
-    models = [MODEL_A, MODEL_B]
+    models = [MODEL_A]
 
     # ── Overall stats ─────────────────────────────────────────────────────────
     overall = compute_stats(closed)
@@ -120,7 +118,6 @@ def compile_report(
         "OU_ZSCORE_ENTRY_THRESHOLD":              OU_ZSCORE_ENTRY_THRESHOLD,
         "BREAKEVEN_ATR_THRESHOLD":                BREAKEVEN_ATR_THRESHOLD,
         "M5_MAX_TRADES_PER_SESSION":              M5_MAX_TRADES_PER_SESSION,
-        "LONDON_REVERSAL_MAX_TRADES_PER_SESSION": LONDON_REVERSAL_MAX_TRADES_PER_SESSION,
     }
     report_data = {
         "by_model":  by_model,
@@ -168,7 +165,6 @@ _STATUS_ICON = {
 
 _MODEL_LABEL = {
     MODEL_A: "A (OU)",
-    MODEL_B: "B (LDN)",
 }
 
 
@@ -192,7 +188,7 @@ def format_telegram_summary(report: dict) -> str:
     ]
 
     # Per-model row
-    for model in [MODEL_A, MODEL_B]:
+    for model in [MODEL_A]:
         label = _MODEL_LABEL.get(model, model)
         ms    = report.get("by_model", {}).get(model, {}).get("stats", {})
         drift = report.get("drift", {}).get(model, {})

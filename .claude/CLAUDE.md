@@ -34,21 +34,29 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 
 ## Trading Models
 
-### Model A — `OU_GRIND`
-- **Strategy:** OU mean-reversion on M5 detrended residuals (EMA50 primary z=0.8, EMA21 fallback z=1.2)
+### Model A — `OU_GRIND` (Active)
+- **Strategy:** OU mean-reversion on M5 detrended residuals (EMA50 primary z=0.9, EMA21 fallback z=1.3)
 - **Sessions:** `NY_OVERLAP` (12:00–16:00 GMT) + `NY_CLOSE` (19:00–21:00 GMT — entry cutoff at 20:00 UTC)
 - **Regimes:** `BULLISH_GRIND` (BUY), `BEARISH_GRIND` (SELL), `BULLISH_BLOWOFF` (BUY, z=1.0), `BEARISH_PANIC` (SELL, z=1.0, EMA50 only — mirror of BLOWOFF)
-- **Session limit:** 8 trades per session
-- **Backtest (Jan 2025–Mar 2026, CENTS $5):** 55.6% WR, 1.12 trades/day, Sharpe 2.71, Max DD 84.5%, 0 busts
+- **Session limit:** 15 trades per session
+- **Time kill:** Dynamic — 3 × half_life × 5 min (fallback 60 min)
+- **Risk:** 15% of balance per trade
+- **Backtest (2025, A+C combined, $500 start):** 58.3% WR, 0.79 trades/day, Sharpe 1.72, $500→$157k, 1 bust (March)
+- **Backtest (2026 Jan–Mar, A+C combined, $500 start):** 67.9% WR, 0.62 trades/day, Sharpe 2.76, $500→$4,953, 0 busts
 
-### Model B — `LONDON_REVERSAL`
+### Model B — `LONDON_REVERSAL` (Disabled)
 - **Strategy:** Kalman velocity flip + CUSUM + N-bar exhaustion + volume climax
-- **Sessions:** `LONDON_OPEN` (07:30–10:00 GMT) — entry from 07:30 UTC (07:00–07:30 is LONDON_BREAKOUT, no model fires there)
-- **Regimes:** Regime-agnostic; H4 bias filter only (BUY blocked when H4=BEARISH, SELL when H4=BULLISH)
-- **Session limit:** 3 trades per session
-- **Time kill:** 120 min (reversals need more room than OU models)
+- **Disabled reason:** Net -$21k drag in 2025 backtest. Anti-martingale cross-contamination: losses at peak balance reduced Model A lot sizes. Defined in code but not called by any agent.
 
-> **No Model C or D.** All alternatives tested and reverted — see Historical Decisions Log.
+### Model C — `LONDON_TREND` (Active)
+- **Strategy:** Asian range breakout (07:00–07:00 compression) + Kalman velocity continuation, LONDON_OPEN Phase 1
+- **Session:** `LONDON_OPEN` (07:00–09:00 UTC entry window only — hard cutoff at 09:00)
+- **Regimes:** `BULLISH_GRIND` (BUY), `BEARISH_GRIND` (SELL) only — BLOWOFF/PANIC excluded (ATR sweeps SLs)
+- **Session limit:** 4 trades per session
+- **Time kill:** Fixed 150 min
+- **Risk:** 5% of balance per trade, **isolated counter** — Model C consecutive losses do NOT affect Model A lot sizing
+- **SL:** max(asian_range / 3, 1.5 × ATR), clamped [$5, $20]
+- **Gates:** 1) GRIND regime, 2) entry < 09:00 UTC, 3) asian_range ≥ $5, 4) 2-bar breakout confirmation, 5) break distance ≤ 2×ATR, 6) Kalman velocity in breakout direction + |vel| ≤ 3.0, 7) regime direction match, 8) H4 bias not opposing
 
 ---
 
@@ -59,17 +67,18 @@ Telegram ←→ GOJO (agents/gojo/agent.py)
 - GETO validation is **pure if/else** — no LLM, no reasoning around it
 - All 5 agents are **zero-LLM** — pure Python only
 - MAHORAGA **never** auto-applies parameter changes — all require explicit user approval via Telegram
-- No cap on simultaneous open trades
-- Risk per trade = exactly 15% of current balance (`RISK_PER_TRADE_PCT = 0.15`)
+- Max simultaneous open trades = 10 (`MAX_SIMULTANEOUS_TRADES = 10`) — enforced as GETO check 11
+- Risk per trade = exactly 15% for Model A, 5% for Model C (isolated) (`RISK_PER_TRADE_PCT = 0.15`, `MODEL_C_RISK_PCT = 0.05`)
 - RR ratio = 1:2 fixed (TP always = SL × 2)
 - Anti-martingale lot sizing: `lot / 2^consecutive_losses`, floor 0.01
 - Breakeven: move SL to entry when profit ≥ 1.5 × ATR (reduces whipsaw breakevens)
 
 ### Model Priority & Sessions
 - **Model A:** NY_OVERLAP + NY_CLOSE. NY_CLOSE entry cutoff at 20:00 UTC (ensures ≥60 min before blackout)
-- **Model B:** LONDON_OPEN only (proven toxic in other sessions). Entry from 07:30 UTC (07:00–07:30 = LONDON_BREAKOUT window, blocked)
-- **Model A vs Model B:** Mutually exclusive by session — Model A never fires in LONDON_OPEN
-- **Concurrent trades:** No position cap — multiple trades can be open simultaneously
+- **Model B:** DISABLED. Defined in code but no agent calls it.
+- **Model C:** LONDON_OPEN only, entry 07:00–09:00 UTC. GRIND regimes only. Isolated 5% risk.
+- **Model A vs Model C:** Mutually exclusive by session — Model A never fires in LONDON_OPEN; Model C never fires in NY sessions
+- **Concurrent trades:** Max 10 simultaneous open trades (GETO check 11: `position_cap_ok`)
 
 ### Session Trade Count Tracking
 BOTH NANAMI and GETO own trade count:
@@ -181,13 +190,13 @@ MAHORAGA: READ trades, account
 
 ---
 
-## GETO Validation Checks (ALL 10 must pass)
+## GETO Validation Checks (ALL 11 must pass)
 
 ```python
 checks = {
     "session_valid":               current_session in ALLOWED_SESSIONS,
     "regime_and_bias_ok":          regime_and_bias_allows(model, direction, regime, h4_bias),
-    "session_trades_within_limit": session_trade_count(model) < limit,  # A:8, B:3
+    "session_trades_within_limit": session_trade_count(model) < limit,  # A:15, C:4
     "consecutive_losses_ok":       consecutive_losses < 4,
     "drawdown_ok":                 current_dd_pct < 50.0,
     "news_clear":                  minutes_to_next_news > 30,
@@ -195,6 +204,7 @@ checks = {
     "not_paused":                  pause_flag == False,
     "not_halted":                  halt_flag == False and emergency_halt_flag == False,
     "structural_break_clear":      structural_break_until expired or empty,
+    "position_cap_ok":             len(open_trades) < 10,  # MAX_SIMULTANEOUS_TRADES
 }
 ```
 
@@ -316,11 +326,13 @@ honored/
 
 ```python
 # Risk
-RISK_PER_TRADE_PCT      = 0.15       # 15% of balance per trade
+RISK_PER_TRADE_PCT      = 0.15       # 15% of balance per trade (Model A)
+MODEL_C_RISK_PCT        = 0.05       # 5% of balance per trade (Model C, isolated)
 MAX_DRAWDOWN_PCT        = 0.50
 MAX_CONSECUTIVE_LOSSES  = 4
 NEWS_BLACKOUT_MINUTES   = 30
 MAX_SPREAD_DOLLARS      = 4.0
+MAX_SIMULTANEOUS_TRADES = 10         # hard cap across all models (GETO check 11)
 
 # Sessions (GMT)
 SESSIONS = {
@@ -356,21 +368,35 @@ RR_RATIO                    = 2.0
 BREAKEVEN_ATR_THRESHOLD     = 1.5   # move SL to entry at +1.5 ATR profit
 OU_TIME_KILL_HALF_LIFE_MULT = 3     # OU time kill = 3 × half_life × 5 min
 MODEL_A_TIME_KILL_MINUTES   = 60    # Model A fallback (no half_life)
-MODEL_B_TIME_KILL_MINUTES   = 120   # Model B London reversal
 MAX_TRADE_DURATION_MINUTES  = 240   # 4h hard cap
+
+# Model C (LONDON_TREND) Parameters
+LONDON_TREND_TIME_KILL_MINUTES    = 150   # fixed 2.5h time kill
+LONDON_TREND_ENTRY_CUTOFF_HOUR    = 9     # no entries at/after 09:00 UTC
+LONDON_TREND_SL_MIN               = 5.0  # $5 floor
+LONDON_TREND_SL_MAX               = 20.0 # $20 cap
+LONDON_TREND_SL_ATR_MULT          = 1.5  # SL = max(range/3, 1.5×ATR)
+LONDON_TREND_SL_RANGE_FRACTION    = 3.0
+LONDON_TREND_MIN_ASIAN_RANGE      = 5.0  # minimum $5 compression
+LONDON_TREND_KALMAN_VEL_THRESHOLD = 0.015
+LONDON_TREND_MAX_KALMAN_VEL       = 3.0  # block panic velocities
+LONDON_TREND_MAX_BREAK_ATR_MULT   = 2.0  # block peak-extension entries
 
 # Model names + sessions
 MODEL_A = "OU_GRIND"
-MODEL_B = "LONDON_REVERSAL"
+MODEL_B = "LONDON_REVERSAL"   # disabled — not called by any agent
+MODEL_C = "LONDON_TREND"
 
 MODEL_SESSION_LIMITS = {
-    MODEL_A: 8,   # per session
-    MODEL_B: 3,   # per session
+    MODEL_A: 15,  # per session
+    MODEL_B: 3,   # per session (disabled)
+    MODEL_C: 4,   # per session
 }
 
 MODEL_SESSIONS = {
     MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],  # NY_CLOSE entry cutoff at 20:00 UTC
-    MODEL_B: ["LONDON_OPEN"],             # entry allowed from 07:00 UTC onward
+    MODEL_B: ["LONDON_OPEN"],             # disabled
+    MODEL_C: ["LONDON_OPEN"],             # entry window 07:00–09:00 UTC
 }
 ```
 
@@ -608,6 +634,11 @@ PHASE 8 ⬜ PENDING    Go Live
 | KALMAN_FEEDER model rejected | TP set at Model A entry zone (z=±0.9); OU force directly opposes the trade there; 20–27% WR |
 | Model C (KALMAN_TREND) built and reverted | Two configs tested: sustained velocity (32% WR) and flip-initiation (33% WR). M5 gold Hurst=0.37 (structurally mean-reverting) — Kalman velocity is anti-edge at M5 in any trend-following form |
 | Model D (INTRADAY_MOM) built and reverted | 45% WR at 1:2 RR = positive fixed-lot EV, but at 20% compounding the 55% loss rate creates catastrophic drawdowns during high-balance periods (-$36k on $51k account). Not viable with current risk settings |
+| Model B (LONDON_REVERSAL) disabled | Net -$21k drag in 2025 combined backtest. Anti-martingale cross-contamination: Model B losses at peak balance reduced shared consecutive_losses counter → smaller Model A lots → less Q4 compounding. Code preserved but no agent calls it. |
+| Model C (LONDON_TREND) built and active | Asian range breakout (overnight compression) + Kalman velocity confirmation. GRIND-only regime gate (no BLOWOFF/PANIC). Isolated 5% risk counter. 2025: 50% WR, RR 3.58pts, +$33k contribution on top of Model A. ATR momentum gate removed — contradicted GRIND regime definition (moderate ATR). |
+| `M5_MAX_TRADES_PER_SESSION = 15` | Raised from 8 — original cap too conservative, rarely hit in practice |
+| `LONDON_TREND_MAX_TRADES_PER_SESSION = 4` | Raised from 2 — session_limit was blocking 79 signals in 2025 (most rejected were valid setups) |
+| `MAX_SIMULTANEOUS_TRADES = 10` | Added as GETO check 11. In practice never exceeds 4 simultaneous. Safety net only. |
 | TIGHT_RANGE regime tested for Model A | 29% WR on 278 trades — anti-edge. No macro anchor means residuals don't mean-revert reliably. 111 TIME_KILL exits (price drifts sideways without reaching TP or SL) |
 | LONDON_OPEN tested for Model A | 29% WR on 210 trades — European session has different flow structure; OU mean-reversion doesn't hold. LONDON_OPEN left exclusively to Model B |
 | `OU_ZSCORE_GRIND_THRESHOLD = 0.9` | Raised from 0.8 (55.6% WR, 1.12/day) to 0.9 (62% WR, 0.54/day) — higher quality signals at cost of frequency. 0.9 matches optimal backtest params (z=0.9/1.3). |

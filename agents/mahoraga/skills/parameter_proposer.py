@@ -265,7 +265,6 @@ def propose_from_analysis(report_data: dict) -> list[Proposal]:
             "OU_ZSCORE_ENTRY_THRESHOLD": 1.3,
             "BREAKEVEN_ATR_THRESHOLD":   1.5,
             "M5_MAX_TRADES_PER_SESSION": 8,
-            "LONDON_REVERSAL_MAX_TRADES_PER_SESSION": 2,
         }
     }
     """
@@ -274,12 +273,11 @@ def propose_from_analysis(report_data: dict) -> list[Proposal]:
     constants = report_data.get("constants", {})
 
     from core.constants import (  # noqa: E402 — import inside fn to allow mocking in tests
-        MODEL_A, MODEL_B,
+        MODEL_A,
         OU_ZSCORE_GRIND_THRESHOLD,
         OU_ZSCORE_ENTRY_THRESHOLD,
         BREAKEVEN_ATR_THRESHOLD,
         M5_MAX_TRADES_PER_SESSION,
-        LONDON_REVERSAL_MAX_TRADES_PER_SESSION,
     )
 
     param_map = {
@@ -287,10 +285,6 @@ def propose_from_analysis(report_data: dict) -> list[Proposal]:
             "zscore_primary":  constants.get("OU_ZSCORE_GRIND_THRESHOLD",  OU_ZSCORE_GRIND_THRESHOLD),
             "zscore_fallback": constants.get("OU_ZSCORE_ENTRY_THRESHOLD",  OU_ZSCORE_ENTRY_THRESHOLD),
             "session_limit":   constants.get("M5_MAX_TRADES_PER_SESSION",  M5_MAX_TRADES_PER_SESSION),
-        },
-        MODEL_B: {
-            "session_limit":   constants.get("LONDON_REVERSAL_MAX_TRADES_PER_SESSION",
-                                             LONDON_REVERSAL_MAX_TRADES_PER_SESSION),
         },
     }
     be_threshold = constants.get("BREAKEVEN_ATR_THRESHOLD", BREAKEVEN_ATR_THRESHOLD)

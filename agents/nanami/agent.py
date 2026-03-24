@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
 from core.constants import (  # noqa: E402
-    MODEL_A, MODEL_B,
+    MODEL_A,
     MODEL_SESSION_LIMITS, MODEL_SESSIONS,
     NANAMI_POLL_ACTIVE, NANAMI_POLL_BLACKOUT,
     REGIME_H1_BARS_NEEDED,
@@ -51,7 +51,6 @@ from agents.nanami.skills import (  # noqa: E402
     session_detector,
     ou_grind,
 )
-from agents.nanami.skills.london_reversal import generate_signal as london_reversal_signal  # noqa: E402
 from agents.nanami.skills.htf_regime import (  # noqa: E402
     detect_regime,
     check_structural_break,
@@ -176,9 +175,7 @@ async def _poll(state: StateManager):
     # ── 9. Signal generation — priority: B → A ───────────────────────────────
     signal = None
 
-    # ── Model B: London reversal — fires in LONDON_OPEN regardless of regime ─
-    if session in MODEL_SESSIONS[MODEL_B]:
-        signal = await _try_model_b(state, df_m5, session, h4_bias)
+    # Model B (LONDON_REVERSAL) disabled — net negative in 2025 backtest (-$21k)
 
     # ── Model A: OU grind — GRIND + BLOWOFF + PANIC, NY sessions ────────────
     if signal is None and regime in (REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC):
@@ -211,17 +208,6 @@ async def _poll(state: StateManager):
 # ---------------------------------------------------------------------------
 # Per-model helpers
 # ---------------------------------------------------------------------------
-
-async def _try_model_b(state: StateManager, df_m5, session: str, h4_bias: str = "NEUTRAL"):
-    """Check session limit, run Model B (London reversal)."""
-    count = await state.get_session_trade_count(session, MODEL_B)
-    if count >= MODEL_SESSION_LIMITS[MODEL_B]:
-        logger.debug(
-            "Model B session limit reached (%d/%d) for %s",
-            count, MODEL_SESSION_LIMITS[MODEL_B], session,
-        )
-        return None
-    return london_reversal_signal(df_m5, session, h4_bias=h4_bias)
 
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, h4_bias: str = "NEUTRAL"):

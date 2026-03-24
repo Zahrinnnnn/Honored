@@ -16,6 +16,7 @@ Validation checks (all must pass for APPROVED)
  8. not_paused                — pause_flag is False
  9. not_halted                — halt_flag AND emergency_halt_flag are both False
 10. structural_break_clear    — no active structural break cooldown
+11. position_cap_ok           — open trades < MAX_SIMULTANEOUS_TRADES (5)
 
 Public API
 ──────────
@@ -32,12 +33,12 @@ from typing import Optional
 
 from core.constants import (
     MODEL_A,
-    MODEL_B,
     ACTIVE_SESSIONS,
     MODEL_SESSION_LIMITS,
     MAX_CONSECUTIVE_LOSSES,
     MAX_DRAWDOWN_PCT,
     MAX_SPREAD_DOLLARS,
+    MAX_SIMULTANEOUS_TRADES,
     NEWS_BLACKOUT_MINUTES,
     REGIME_BULLISH_GRIND,
     REGIME_BEARISH_GRIND,
@@ -105,13 +106,6 @@ def _regime_and_bias_ok(
             return regime in (REGIME_BULLISH_GRIND, REGIME_BULLISH_BLOWOFF) and h4_bias != "BEARISH"
         if direction == "SELL":
             return regime in (REGIME_BEARISH_GRIND, REGIME_BEARISH_PANIC) and h4_bias != "BULLISH"
-        return False
-
-    if model == MODEL_B:
-        if direction == "BUY":
-            return h4_bias != "BEARISH"
-        if direction == "SELL":
-            return h4_bias != "BULLISH"
         return False
 
     logger.warning("_regime_and_bias_ok: unknown model '%s'", model)
@@ -198,6 +192,10 @@ async def validate(
     # ── 10. structural_break_clear ──────────────────────────────────────────
     sb_until = await state.get_session_info("structural_break_until") or ""
     checks["structural_break_clear"] = not _is_structural_break_active(sb_until)
+
+    # ── 11. position_cap_ok ─────────────────────────────────────────────────
+    open_trades = await state.get_open_trades()
+    checks["position_cap_ok"] = len(open_trades) < MAX_SIMULTANEOUS_TRADES
 
     # ── Decision ────────────────────────────────────────────────────────────
     fail_reason = next((name for name, ok in checks.items() if not ok), "")

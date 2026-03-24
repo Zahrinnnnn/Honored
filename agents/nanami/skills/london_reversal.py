@@ -54,6 +54,7 @@ _MIN_ASIAN_RANGE     = 3.0       # $3 minimum overnight range
 _MIN_ENTRY_HOUR      = 7         # allow from 07:30 UTC onward
 _MIN_SCORE           = 3         # Kalman flip (2pts) + any 1 confirmation (1pt)
 _KALMAN_LOOKBACK     = 5         # bars to look back for velocity flip
+_STOP_HUNT_LOOKBACK  = 5         # bars to look back for stop hunt sweep
 _CONSEC_MIN          = 3         # minimum consecutive bars for exhaustion signal
 _CUSUM_WINDOW        = 20        # bars for CUSUM accumulation
 _CUSUM_ATR_MULT      = 1.0       # CUSUM must exceed N×ATR to count as significant sweep

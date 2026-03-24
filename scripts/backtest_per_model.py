@@ -37,10 +37,11 @@ from agents.nanami.skills.indicator_engine import add_indicators
 from agents.nanami.skills.htf_regime import detect_regime, check_structural_break, compute_macro_bias, compute_h4_bias
 from agents.nanami.skills.ou_grind import generate_signal as _ou_signal
 from agents.nanami.skills.london_reversal import generate_signal as _london_reversal_signal
+from agents.nanami.skills.london_trend import generate_signal as _london_trend_signal
 from agents.toji.skills.lot_calculator import calculate_lot
 from agents.toji.skills.trade_monitor import calculate_pnl
 from core.constants import (
-    MODEL_A, MODEL_B,
+    MODEL_A, MODEL_B, MODEL_C,
     OU_TIME_KILL_HALF_LIFE_MULT,
     TIME_KILL_MINUTES, MAX_TRADE_DURATION_MINUTES,
     XAUUSD_POINT_VALUE,
@@ -51,6 +52,8 @@ from core.constants import (
     RR_RATIO,
     ACCOUNT_TYPE,
     MAX_CONSECUTIVE_LOSSES,
+    MODEL_C_RISK_PCT,
+    LONDON_TREND_TIME_KILL_MINUTES,
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -62,7 +65,7 @@ SLIPPAGE_VOLATILE = 0.30   # slippage during high-ATR bars
 _ATR_VOLATILE_PCTILE = 80  # ATR percentile threshold for "volatile" spread/slippage
 _WARMUP_M5 = 260
 BUST_THRESHOLD = 0.50  # refill when balance drops below this
-MAX_SIMULTANEOUS_TRADES = 8  # max open trades at once
+MAX_SIMULTANEOUS_TRADES = 10  # max open trades at once
 DAILY_LOSS_LIMIT_PCT = 0.15  # stop new signals if today's loss exceeds 15% of day-open balance
 
 # ── Opt 2: Breakeven protection raised to +1.5 ATR ─────────────────────────
@@ -83,10 +86,12 @@ _BLACKOUT_END   = time(7,  0)
 _MODEL_SESSIONS = {
     MODEL_A: {"NY_OVERLAP", "NY_CLOSE"},
     MODEL_B: {"LONDON_OPEN"},
+    MODEL_C: {"LONDON_OPEN"},
 }
 _SESSION_LIMIT = {
-    MODEL_A: 8,   # per session
-    MODEL_B: 3,   # per session — matches LONDON_REVERSAL_MAX_TRADES_PER_SESSION in constants.py
+    MODEL_A: 15,  # per session
+    MODEL_B: 3,
+    MODEL_C: 2,   # max 2 London trend entries per day
 }
 
 
@@ -215,7 +220,11 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
         return False, "wrong_model"
     if state["emergency_halt"]:
         return False, "emergency_halt"
-    if state["soft_halt"]:
+    # Model C has isolated soft halt — doesn't share with Model A
+    if model == MODEL_C:
+        if state["model_c_soft_halt"]:
+            return False, "model_c_soft_halt"
+    elif state["soft_halt"]:
         return False, "soft_halt"
     if state["structural_break_until"] and bar_dt < state["structural_break_until"]:
         return False, "structural_break"
@@ -255,14 +264,16 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
 
 def _open_trade(signal, bar, state, slippage: float = 0.0, fixed_lot: float = None):
     sl_distance_points = float(signal["sl_distance"])
-    # calculate_lot expects sl_distance as a raw price-unit distance (USD per oz).
-    # It applies XAUUSD_POINT_VALUE internally: lot = risk / (sl_distance × point_value).
-    # Do NOT pre-multiply here — that would double-count XAUUSD_POINT_VALUE and floor
-    # every STANDARD trade to the 0.01 minimum lot, killing compounding.
     if fixed_lot is not None:
-        lot = fixed_lot  # Fixed-lot mode: bypass anti-martingale compounding
+        lot = fixed_lot
+    elif signal["model"] == MODEL_C:
+        # Model C: isolated 5% risk + own consecutive loss counter
+        lot = calculate_lot(state["balance"], sl_distance_points,
+                            risk_pct=MODEL_C_RISK_PCT,
+                            consecutive_losses=state["model_c_consecutive_losses"])
     else:
-        lot = calculate_lot(state["balance"], sl_distance_points, consecutive_losses=state["consecutive_losses"])
+        lot = calculate_lot(state["balance"], sl_distance_points,
+                            consecutive_losses=state["consecutive_losses"])
     entry = float(signal["entry_price"])
 
     # Apply slippage: BUY fills higher, SELL fills lower (adverse)
@@ -317,13 +328,23 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
 
     # BREAKEVEN counts as WIN for loss streak
     state_result = "WIN" if result in ("WIN", "BREAKEVEN") else "LOSS"
-    if state_result == "WIN":
-        state["consecutive_losses"] = 0
-        state["soft_halt"] = False
+    if trade.get("model") == MODEL_C:
+        # Model C: update isolated counter only
+        if state_result == "WIN":
+            state["model_c_consecutive_losses"] = 0
+            state["model_c_soft_halt"] = False
+        else:
+            state["model_c_consecutive_losses"] += 1
+            if state["model_c_consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                state["model_c_soft_halt"] = True
     else:
-        state["consecutive_losses"] += 1
-        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-            state["soft_halt"] = True
+        if state_result == "WIN":
+            state["consecutive_losses"] = 0
+            state["soft_halt"] = False
+        else:
+            state["consecutive_losses"] += 1
+            if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                state["soft_halt"] = True
 
     state["all_trades"].append({
         **trade,
@@ -348,6 +369,8 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
         state["consecutive_losses"] = 0
         state["soft_halt"]     = False
         state["emergency_halt"] = False
+        state["model_c_consecutive_losses"] = 0
+        state["model_c_soft_halt"]          = False
 
 
 def _try_exit_rr(trade, bar, bar_dt):
@@ -402,13 +425,15 @@ def _try_exit_rr(trade, bar, bar_dt):
     # Time kill per model:
     #   Model A: OU-calibrated (3 × half_life × 5 min), fallback 60 min
     #   Model B: 120 min (London reversals need room)
-    #   (Model C and D reverted — not in live system)
+    #   Model C: 150 min (hold through Phase 2, exit before pre-NY dead zone)
     half_life = float(trade.get("half_life_bars", 0.0))
     model = trade.get("model", "")
     if half_life > 0:
         time_kill_mins = half_life * OU_TIME_KILL_HALF_LIFE_MULT * 5.0
     elif model == MODEL_B:
         time_kill_mins = 120.0
+    elif model == MODEL_C:
+        time_kill_mins = LONDON_TREND_TIME_KILL_MINUTES
     else:
         time_kill_mins = TIME_KILL_MINUTES
 
@@ -435,6 +460,12 @@ def _generate_signals_for_bar(df_m5_win, session, is_breakout, regime,
         REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND, REGIME_BULLISH_BLOWOFF,
         REGIME_BEARISH_PANIC,
     )
+
+    # Model C — London Trend (Asian breakout + Kalman continuation, Phase 1+2)
+    if session in _MODEL_SESSIONS[MODEL_C]:
+        sig = _london_trend_signal(df_m5_win, session, regime=regime, h4_bias=h4_bias)
+        if sig:
+            sigs.append(sig)
 
     # Model B — London reversal (Kalman + CUSUM + N-bar + Volume climax)
     if session in _MODEL_SESSIONS[MODEL_B]:
@@ -471,7 +502,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         fixed_lot: if set, every trade uses this lot size (bypasses anti-martingale).
     """
     if models_to_run is None:
-        models_to_run = {MODEL_A, MODEL_B}
+        models_to_run = {MODEL_A}  # Model B/C disabled — net negative after compounding cross-contamination
 
     # Precompute ATR percentile for dynamic spread/slippage
     atr_pctile = _precompute_atr_pctile(df_m5_ind)
@@ -483,13 +514,16 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         "open_trades":            [],
         "session_counts":         {},
         "soft_halt":              False,
-        "orb_fired_date":         None,    # ORB fires at most once per day
-        "vwap_last_entry_bar":    -999,    # Model B cooldown: bar index of last London entry
+        "orb_fired_date":         None,
+        "vwap_last_entry_bar":    -999,
         "emergency_halt":         False,
         "all_trades":             [],
         "refill_count":           0,
         "structural_break_until": None,
         "day_start_balance":      balance,
+        # Model C isolated risk tracking
+        "model_c_consecutive_losses": 0,
+        "model_c_soft_halt":          False,
     }
 
     prev_date   = None
@@ -509,7 +543,10 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
                 state["soft_halt"]          = False
                 state["emergency_halt"]     = False
                 state["consecutive_losses"] = 0
-            state["day_start_balance"] = state["balance"]  # reset daily loss tracking
+            if state["model_c_soft_halt"]:
+                state["model_c_soft_halt"]          = False
+                state["model_c_consecutive_losses"] = 0
+            state["day_start_balance"] = state["balance"]
             prev_date = today
 
         # Check exits on open trades
@@ -554,6 +591,8 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
 
         _, bar_slippage = _get_friction(atr_pctile[i])
         for sig in sigs:
+            if sig["model"] not in models_to_run:
+                continue
             signals_generated += 1
 
             # Model B: 60 min cooldown between London reversal entries
@@ -900,6 +939,8 @@ def main():
                    help="Split period in half and run each separately — checks if gains are regime-specific.")
     p.add_argument("--monte-carlo", action="store_true",
                    help="Run 2000-iteration Monte Carlo on shuffled trade P&L after backtest.")
+    p.add_argument("--model-c", action="store_true",
+                   help="Include Model C (LONDON_TREND) in addition to Model A.")
     a = p.parse_args()
 
     # Load data
@@ -939,7 +980,8 @@ def main():
         end_bar = min(total_bars, int(df_m5.index.searchsorted(ed)))
         print(f"End date filter  : {a.end_date} (bar {end_bar})")
 
-    label = "Model A"
+    models_to_run = {MODEL_A, MODEL_C} if getattr(a, "model_c", False) else {MODEL_A}
+    label = "Model A + C" if MODEL_C in models_to_run else "Model A"
     fixed_lot = getattr(a, "fixed_lot", None)
 
     print(f"  Account Type   : {ACCOUNT_TYPE} (Point Value: {XAUUSD_POINT_VALUE})")
@@ -960,7 +1002,8 @@ def main():
             print(f"{'─' * 50}")
             tdays = _count_trading_days(df_m5.iloc[hstart:hend])
             res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
-                               hstart, hend, fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
+                               hstart, hend, models_to_run=models_to_run,
+                               fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
             _print_summary(res, a.balance, tdays)
     else:
         # ── Standard full-period run ──────────────────────────────────────────
@@ -969,7 +1012,8 @@ def main():
         print(f"{'─' * 50}")
         trading_days = _count_trading_days(df_m5.iloc[start_bar:end_bar])
         res = run_backtest(df_m5_ind, {}, regime_map, a.balance,
-                           start_bar, end_bar, fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
+                           start_bar, end_bar, models_to_run=models_to_run,
+                           fixed_lot=fixed_lot, h4_bias_map=h4_bias_map)
         df_results = _print_summary(res, a.balance, trading_days)
 
         if getattr(a, "monte_carlo", False):

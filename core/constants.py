@@ -19,6 +19,7 @@ MAX_DRAWDOWN_PCT         = 0.50
 MAX_CONSECUTIVE_LOSSES   = 4
 NEWS_BLACKOUT_MINUTES    = 30
 MAX_SPREAD_DOLLARS       = 4.0
+MAX_SIMULTANEOUS_TRADES  = 10
 
 # Trading sessions (GMT, 24h "HH:MM" strings)
 SESSIONS = {
@@ -87,7 +88,7 @@ OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
 OU_SL_MAX                 = 12.0  # $12 maximum SL distance
 ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance threshold
-M5_MAX_TRADES_PER_SESSION = 8     # Model A session limit
+M5_MAX_TRADES_PER_SESSION = 15    # Model A session limit
 NY_OVERLAP_DEAD_HOUR_START = 14   # 14:00 UTC — dead zone start (US midday)
 NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 
@@ -96,17 +97,35 @@ NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 # ─────────────────────────────────────────────────────────────────────────────
 MODEL_A = "OU_GRIND"
 MODEL_B = "LONDON_REVERSAL"   # Kalman + CUSUM + N-bar + volume climax, London Open only
+MODEL_C = "LONDON_TREND"      # Asian range breakout + Kalman continuation, London Phase 1+2
 
-LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 3   # relaxed to allow more setups
+LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 3
+LONDON_TREND_MAX_TRADES_PER_SESSION    = 4   # max 4 London trend entries per day
+
+# Model C risk — isolated from Model A to prevent anti-martingale cross-contamination
+MODEL_C_RISK_PCT                  = 0.05   # 5% of balance (vs 15% for A)
+LONDON_TREND_TIME_KILL_MINUTES    = 150    # 2.5h — exits by ~11:30 from latest 09:00 entry
+LONDON_TREND_ENTRY_CUTOFF_HOUR    = 9      # no new entries at/after 09:00 UTC
+LONDON_TREND_SL_MIN               = 5.0   # $5 floor
+LONDON_TREND_SL_MAX               = 20.0  # $20 cap (raised — must survive panic ATR spikes)
+LONDON_TREND_SL_ATR_MULT          = 1.5   # SL = max(asian_range/3, 1.5×ATR) — ATR floor ensures room
+LONDON_TREND_SL_RANGE_FRACTION    = 3.0   # SL = asian_range / 3 (then take max with ATR floor)
+LONDON_TREND_MIN_ASIAN_RANGE      = 5.0   # minimum $5 overnight compression
+LONDON_TREND_ATR_MOMENTUM_MULT    = 1.1   # ATR must be >= 1.1× baseline (real momentum)
+LONDON_TREND_KALMAN_VEL_THRESHOLD = 0.015 # velocity must exceed this in breakout direction
+LONDON_TREND_MAX_KALMAN_VEL       = 3.0   # block if |velocity| > 3.0 (panic/free-fall chase)
+LONDON_TREND_MAX_BREAK_ATR_MULT   = 2.0   # block if break distance > 2×ATR (peak extension)
 
 MODEL_SESSION_LIMITS = {
-    MODEL_A: M5_MAX_TRADES_PER_SESSION,               # 8 per session
-    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION,  # 3 per session
+    MODEL_A: M5_MAX_TRADES_PER_SESSION,
+    MODEL_B: LONDON_REVERSAL_MAX_TRADES_PER_SESSION,
+    MODEL_C: LONDON_TREND_MAX_TRADES_PER_SESSION,
 }
 
 MODEL_SESSIONS = {
     MODEL_A: ["NY_OVERLAP", "NY_CLOSE"],  # NY_CLOSE capped at 20:00 UTC entry cutoff
     MODEL_B: ["LONDON_OPEN"],
+    MODEL_C: ["LONDON_OPEN"],             # entry window 07:00–09:00 UTC (gated internally)
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
