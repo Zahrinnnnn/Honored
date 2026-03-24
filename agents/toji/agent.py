@@ -38,7 +38,10 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 load_dotenv()
 
-from core.constants import RISK_PER_TRADE_PCT, TOJI_MONITOR_INTERVAL  # noqa: E402
+from core.constants import (                                           # noqa: E402
+    RISK_PER_TRADE_PCT, RISK_PER_TRADE_FIRST_DAILY,
+    MODEL_A, MODEL_C, MODEL_C_RISK_PCT, TOJI_MONITOR_INTERVAL,
+)
 from core.state_manager import StateManager, PAPER_MODE                # noqa: E402
 from agents.toji.skills.lot_calculator import calculate_lot            # noqa: E402
 from agents.toji.skills.order_placer import place_order                # noqa: E402
@@ -143,10 +146,23 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
         return
 
     consec = await state.get_consecutive_losses()
-    lot_size = calculate_lot(balance, sl_distance, RISK_PER_TRADE_PCT, consec)
+
+    # Determine risk %:
+    #   Model A — first trade of the day: 50%, subsequent: 20%
+    #   Model C — always 5% (isolated risk)
+    #   Others  — standard 20%
+    if model == MODEL_C:
+        risk_pct = MODEL_C_RISK_PCT
+    elif model == MODEL_A:
+        trades_today = await state.get_today_model_trade_count(MODEL_A)
+        risk_pct = RISK_PER_TRADE_FIRST_DAILY if trades_today == 0 else RISK_PER_TRADE_PCT
+    else:
+        risk_pct = RISK_PER_TRADE_PCT
+
+    lot_size = calculate_lot(balance, sl_distance, risk_pct, consec)
     logger.info(
-        "Executing %s %s | balance=%.2f sl=%.2f consec=%d → lot=%.2f",
-        model, direction, balance, sl_distance, consec, lot_size,
+        "Executing %s %s | balance=%.2f sl=%.2f consec=%d risk=%.0f%% → lot=%.2f",
+        model, direction, balance, sl_distance, consec, risk_pct * 100, lot_size,
     )
 
     # ── 3. Place order ──────────────────────────────────────────────────────

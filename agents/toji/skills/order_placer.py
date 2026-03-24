@@ -100,33 +100,56 @@ async def _live_order(connection, signal: dict, lot_size: float) -> dict:
     sl_price    = float(signal.get("sl_price",    0.0))
     tp_price    = float(signal.get("tp_price",    0.0))
 
-    try:
-        if direction == "BUY":
-            result = await connection.create_market_buy_order(
-                _SYMBOL, lot_size, sl_price, tp_price,
-                options={"comment": "HONORED"},
-            )
-        else:
-            result = await connection.create_market_sell_order(
-                _SYMBOL, lot_size, sl_price, tp_price,
-                options={"comment": "HONORED"},
-            )
+    current_lot = lot_size
+    last_exc    = None
 
-        order_id   = result.get("orderId") or result.get("positionId", "UNKNOWN")
-        fill_price = float(result.get("openPrice", entry_price))
+    while current_lot >= 0.01:
+        try:
+            if direction == "BUY":
+                result = await connection.create_market_buy_order(
+                    _SYMBOL, current_lot, sl_price, tp_price,
+                    options={"comment": "HONORED"},
+                )
+            else:
+                result = await connection.create_market_sell_order(
+                    _SYMBOL, current_lot, sl_price, tp_price,
+                    options={"comment": "HONORED"},
+                )
 
-        logger.info(
-            "[LIVE] %s order placed | lot=%.2f | entry=%.5f SL=%.5f TP=%.5f | id=%s",
-            direction, lot_size, fill_price, sl_price, tp_price, order_id,
-        )
-        return {
-            "order_id":    order_id,
-            "entry_price": fill_price,
-            "sl_price":    sl_price,
-            "tp_price":    tp_price,
-            "lot_size":    lot_size,
-            "paper":       False,
-        }
-    except Exception as exc:
-        logger.error("MetaApi order placement failed: %s", exc)
-        raise RuntimeError(f"Order placement failed: {exc}") from exc
+            order_id   = result.get("orderId") or result.get("positionId", "UNKNOWN")
+            fill_price = float(result.get("openPrice", entry_price))
+
+            if current_lot < lot_size:
+                logger.warning(
+                    "[LIVE] Insufficient margin — lot reduced %.2f → %.2f",
+                    lot_size, current_lot,
+                )
+            logger.info(
+                "[LIVE] %s order placed | lot=%.2f | entry=%.5f SL=%.5f TP=%.5f | id=%s",
+                direction, current_lot, fill_price, sl_price, tp_price, order_id,
+            )
+            return {
+                "order_id":    order_id,
+                "entry_price": fill_price,
+                "sl_price":    sl_price,
+                "tp_price":    tp_price,
+                "lot_size":    current_lot,
+                "paper":       False,
+            }
+        except Exception as exc:
+            err = str(exc).lower()
+            if "not enough money" in err or "insufficient" in err or "10019" in err or "margin" in err:
+                last_exc    = exc
+                current_lot = round(current_lot / 2, 2)
+                if current_lot < 0.01:
+                    break
+                logger.warning(
+                    "[LIVE] Insufficient margin, retrying with lot=%.2f", current_lot,
+                )
+                continue
+            # Non-margin error — fail immediately
+            logger.error("MetaApi order placement failed: %s", exc)
+            raise RuntimeError(f"Order placement failed: {exc}") from exc
+
+    logger.error("Order skipped — insufficient margin even at minimum lot (0.01). Last error: %s", last_exc)
+    raise RuntimeError(f"Insufficient margin at minimum lot: {last_exc}") from last_exc

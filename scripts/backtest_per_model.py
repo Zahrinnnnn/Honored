@@ -54,6 +54,7 @@ from core.constants import (
     MAX_CONSECUTIVE_LOSSES,
     MODEL_C_RISK_PCT,
     LONDON_TREND_TIME_KILL_MINUTES,
+    RISK_PER_TRADE_PCT, RISK_PER_TRADE_FIRST_DAILY,
 )
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -255,7 +256,7 @@ def _validate(signal, state, session, is_breakout, bar_dt, regime,
     # Session limit
     today = bar_dt.date()
     if state["session_counts"].get((session, model, today), 0) >= _SESSION_LIMIT[model]:
-        return False, "session_limit"
+        return False, f"session_limit_{model}"
 
     return True, "ok"
 
@@ -272,7 +273,10 @@ def _open_trade(signal, bar, state, slippage: float = 0.0, fixed_lot: float = No
                             risk_pct=MODEL_C_RISK_PCT,
                             consecutive_losses=state["model_c_consecutive_losses"])
     else:
+        # First Model A trade of the day gets 50% risk; subsequent trades get 20%
+        risk_pct = RISK_PER_TRADE_FIRST_DAILY if state["model_a_trades_today"] == 0 else RISK_PER_TRADE_PCT
         lot = calculate_lot(state["balance"], sl_distance_points,
+                            risk_pct=risk_pct,
                             consecutive_losses=state["consecutive_losses"])
     entry = float(signal["entry_price"])
 
@@ -336,7 +340,9 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
         else:
             state["model_c_consecutive_losses"] += 1
             if state["model_c_consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-                state["model_c_soft_halt"] = True
+                # Simulate immediate /override
+                state["model_c_soft_halt"] = False
+                state["model_c_consecutive_losses"] = 0
     else:
         if state_result == "WIN":
             state["consecutive_losses"] = 0
@@ -344,7 +350,9 @@ def _close_trade(trade, exit_info, bar, state, start_balance, spread: float = SP
         else:
             state["consecutive_losses"] += 1
             if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-                state["soft_halt"] = True
+                # Simulate immediate /override — no waiting until next morning
+                state["soft_halt"] = False
+                state["consecutive_losses"] = 0
 
     state["all_trades"].append({
         **trade,
@@ -524,6 +532,7 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
         # Model C isolated risk tracking
         "model_c_consecutive_losses": 0,
         "model_c_soft_halt":          False,
+        "model_a_trades_today":       0,
     }
 
     prev_date   = None
@@ -546,7 +555,8 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
             if state["model_c_soft_halt"]:
                 state["model_c_soft_halt"]          = False
                 state["model_c_consecutive_losses"] = 0
-            state["day_start_balance"] = state["balance"]
+            state["day_start_balance"]  = state["balance"]
+            state["model_a_trades_today"] = 0
             prev_date = today
 
         # Check exits on open trades
@@ -605,6 +615,8 @@ def run_backtest(df_m5_ind, _unused, regime_map, balance: float,
             ok, reason = _validate(sig, state, session, is_breakout, dt, regime)
             if ok:
                 _open_trade(sig, bar, state, slippage=bar_slippage, fixed_lot=fixed_lot)
+                if sig["model"] == MODEL_A:
+                    state["model_a_trades_today"] += 1
             else:
                 reject_reasons[reason] += 1
 

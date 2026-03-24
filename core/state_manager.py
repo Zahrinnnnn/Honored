@@ -314,6 +314,16 @@ class StateManager:
         )
         return [dict(r) for r in rows]
 
+    async def get_today_model_trade_count(self, model: str) -> int:
+        """Return number of trades (open + closed) placed today for the given model."""
+        paper_filter = 1 if PAPER_MODE else 0
+        today = _today()
+        row = await self._fetchone(
+            "SELECT COUNT(*) FROM trades WHERE model = ? AND date = ? AND paper = ?",
+            (model, today, paper_filter),
+        )
+        return int(row[0]) if row else 0
+
     async def get_all_trades(self, limit: int = 500) -> list:
         rows = await self._fetchall(
             "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)

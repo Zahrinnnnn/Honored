@@ -7,15 +7,12 @@ Formula
 ───────
     lot = round((balance × risk_pct) / (sl_distance × XAUUSD_POINT_VALUE), 2)
 
-XAUUSD_POINT_VALUE (from constants, driven by ACCOUNT_TYPE env var):
-  CENTS    = 1   → HFM Cents: 1 lot = $1 per $1 move (live account)
-  STANDARD = 100 → Standard MT5: 1 lot = $100 per $1 move (paper/demo)
+XAUUSD_POINT_VALUE = 100 for both CENTS and STANDARD accounts.
+  MetaApi returns CENTS balance in USC (e.g. $5 USD = 500 USC).
+  1 cent-lot XAUUSD = 100 USC per $1 gold move — same formula as STANDARD.
 
-Both account types risk the same dollar amount; only the lot number differs.
-
-Examples (balance=$20, SL=$5, risk=0.5%):
-  CENTS    : lot = $0.10 / ($5 × 1)   = 0.02  → placed as 0.02 cents-lots
-  STANDARD : lot = $0.10 / ($5 × 100) = 0.0002 → 0.01 min lot
+Examples (balance=$500, SL=$8, risk=20%):
+  lot = ($500 × 0.20) / ($8 × 100) = $100 / $800 = 0.13 lots
 
 Public API
 ──────────
@@ -47,7 +44,7 @@ def calculate_lot(
     Args:
         balance:            Current account balance in USD.
         sl_distance:        Stop-loss distance in USD (must be > 0).
-        risk_pct:           Fraction of balance to risk (default 5%).
+        risk_pct:           Fraction of balance to risk (default RISK_PER_TRADE_PCT).
         consecutive_losses: Current streak of consecutive losses (0 = full size).
 
     Returns:

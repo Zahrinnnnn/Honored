@@ -14,7 +14,8 @@ XAUUSD_POINT_VALUE = 100
 SYMBOL = "XAUUSDc" if ACCOUNT_TYPE == "CENTS" else "XAUUSD"
 
 # Risk parameters
-RISK_PER_TRADE_PCT       = 0.15
+RISK_PER_TRADE_PCT            = 0.20   # Model A standard risk (trades 2+ per day)
+RISK_PER_TRADE_FIRST_DAILY    = 0.50   # Model A first trade of the day only
 MAX_DRAWDOWN_PCT         = 0.50
 MAX_CONSECUTIVE_LOSSES   = 4
 NEWS_BLACKOUT_MINUTES    = 30
@@ -88,7 +89,7 @@ OU_SL_ATR_MULT            = 1.5   # SL = 1.5 × ATR14
 OU_SL_MIN                 = 6.0   # $6 minimum SL distance
 OU_SL_MAX                 = 12.0  # $12 maximum SL distance
 ADF_P_VALUE_THRESHOLD     = 0.10  # ADF significance threshold
-M5_MAX_TRADES_PER_SESSION = 15    # Model A session limit
+M5_MAX_TRADES_PER_SESSION = 20    # Model A session limit
 NY_OVERLAP_DEAD_HOUR_START = 14   # 14:00 UTC — dead zone start (US midday)
 NY_OVERLAP_DEAD_HOUR_END   = 15   # 15:00 UTC — dead zone end
 
@@ -100,7 +101,7 @@ MODEL_B = "LONDON_REVERSAL"   # Kalman + CUSUM + N-bar + volume climax, London O
 MODEL_C = "LONDON_TREND"      # Asian range breakout + Kalman continuation, London Phase 1+2
 
 LONDON_REVERSAL_MAX_TRADES_PER_SESSION = 3
-LONDON_TREND_MAX_TRADES_PER_SESSION    = 4   # max 4 London trend entries per day
+LONDON_TREND_MAX_TRADES_PER_SESSION    = 20  # max 20 London trend entries per day
 
 # Model C risk — isolated from Model A to prevent anti-martingale cross-contamination
 MODEL_C_RISK_PCT                  = 0.05   # 5% of balance (vs 15% for A)
