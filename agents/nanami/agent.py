@@ -41,6 +41,7 @@ from core.constants import (  # noqa: E402
     REGIME_BULLISH_GRIND, REGIME_BEARISH_GRIND,
     REGIME_BULLISH_BLOWOFF, REGIME_BEARISH_PANIC, NO_TRADE_REGIMES,
     STRUCTURAL_BREAK_COOLDOWN_HOURS,
+    MAX_MODEL_A_CONCURRENT,
 )
 from core.state_manager import StateManager  # noqa: E402
 from core.news_fetcher import minutes_to_next_high_impact_event  # noqa: E402
@@ -156,7 +157,7 @@ async def _poll(state: StateManager):
         logger.warning("STRUCTURAL BREAK — cooldown until %s", cooldown_end)
         return
 
-    logger.info("Session=%s  Regime=%s", session, regime)
+    logger.info("Session=%s  Regime=%s  H4=%s", session, regime, h4_bias)
 
     # ── 7. Update spread & news timing ───────────────────────────────────
     price = await market_data.get_current_price()
@@ -230,12 +231,22 @@ async def _try_model_c(state: StateManager, df_m5, session: str, regime: str, h4
 
 
 async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, h4_bias: str = "NEUTRAL"):
-    """Check session limit, run Model A (OU grind) with H4 bias gate."""
+    """Check session limit and concurrent cap, run Model A (OU grind) with H4 bias gate."""
     count = await state.get_session_trade_count(session, MODEL_A)
     if count >= MODEL_SESSION_LIMITS[MODEL_A]:
         logger.debug(
             "Model A session limit reached (%d/%d) for %s",
             count, MODEL_SESSION_LIMITS[MODEL_A], session,
+        )
+        return None
+
+    # Hard cap on concurrent open Model A positions — prevents simultaneous margin exposure
+    open_trades = await state.get_open_trades()
+    open_model_a = [t for t in open_trades if t.get("model") == MODEL_A]
+    if len(open_model_a) >= MAX_MODEL_A_CONCURRENT:
+        logger.info(
+            "Model A concurrent cap (%d/%d open) — waiting for existing trade to close",
+            len(open_model_a), MAX_MODEL_A_CONCURRENT,
         )
         return None
 
@@ -251,6 +262,7 @@ async def _try_model_a(state: StateManager, df_m5, session: str, regime: str, h4
         logger.debug("Model A SELL blocked — H4 bias is BULLISH")
         return None
 
+    signal["h4_bias"] = h4_bias
     return signal
 
 

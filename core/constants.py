@@ -21,6 +21,7 @@ MAX_CONSECUTIVE_LOSSES   = 4
 NEWS_BLACKOUT_MINUTES    = 30
 MAX_SPREAD_DOLLARS       = 4.0
 MAX_SIMULTANEOUS_TRADES  = 10
+MAX_MODEL_A_CONCURRENT   = 1    # max open Model A positions at any time
 
 # Trading sessions (GMT, 24h "HH:MM" strings)
 SESSIONS = {

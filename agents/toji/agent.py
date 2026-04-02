@@ -51,6 +51,8 @@ from agents.toji.skills.trade_monitor import (                         # noqa: E
     check_breakeven,
     calculate_pnl,
     get_current_price,
+    find_closed_trades,
+    get_live_positions,
 )
 from agents.toji.skills.trade_logger import log_trade_open, log_trade_close  # noqa: E402
 from agents.toji.skills.state_updater import post_trade_update               # noqa: E402
@@ -77,17 +79,18 @@ _POLL_INTERVAL = 5   # seconds between signal checks
 async def run():
     logger.info("TOJI starting up — executor online (paper=%s)", PAPER_MODE)
 
-    # Connection is lazy: TOJI does NOT connect MetaApi at startup.
-    # NANAMI holds the persistent subscription; TOJI connects only when placing a live order.
-    # Trade monitoring reads price from SQLite session_info (written by NANAMI every 60s).
+    # In live mode: establish MetaApi connection at startup for order placement + monitoring.
+    # In paper mode: connection stays None (price read from SQLite session_info).
     connection = None
+    if not PAPER_MODE:
+        connection = await _get_connection()
 
     last_monitor = 0.0
 
     async with StateManager() as state:
         while True:
             try:
-                await _poll_signals(state, connection)
+                connection = await _poll_signals(state, connection)
 
                 now = asyncio.get_event_loop().time()
                 if now - last_monitor >= TOJI_MONITOR_INTERVAL:
@@ -105,45 +108,59 @@ async def run():
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _poll_signals(state: StateManager, connection):
-    """Check for an APPROVED signal and execute it."""
+    """Check for an APPROVED signal and execute it. Returns (possibly updated) connection."""
     decision = await state.get_trading_state("last_risk_decision")
     if decision != "APPROVED":
-        return
+        return connection
 
     raw = await state.get_trading_state("last_signal")
     if not raw:
-        return
+        return connection
 
     try:
         signal = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         logger.warning("last_signal is not valid JSON — skipping")
-        return
+        return connection
 
     if signal.get("status") != "APPROVED":
-        return
+        return connection
 
-    await _execute_signal(state, signal, connection)
+    connection = await _execute_signal(state, signal, connection)
+    return connection
 
 
 async def _execute_signal(state: StateManager, signal: dict, connection):
-    """Execute a single approved signal: lot calc → order → log → state update."""
+    """Execute a single approved signal: lot calc → order → log → state update.
+    Returns (possibly updated) connection."""
     model     = signal.get("model",     "")
     direction = signal.get("direction", "")
 
-    # ── 1. Read account balance for lot calculation ─────────────────────────
-    account = await state.get_account()
-    balance = float(account.get("balance", 0.0)) if account else 0.0
+    # ── 1. Read live account balance from MetaApi (live) or DB (paper) ─────
+    if not PAPER_MODE and connection is not None:
+        try:
+            acct_info = await connection.get_account_information()
+            balance = float(acct_info.get("balance", 0.0))
+            equity  = float(acct_info.get("equity",  balance))
+            await state.update_account(balance=balance, equity=equity)
+            logger.info("Live balance synced: %.2f (equity %.2f)", balance, equity)
+        except Exception as exc:
+            logger.warning("Could not sync live balance: %s — falling back to DB", exc)
+            account = await state.get_account()
+            balance = float(account.get("balance", 0.0)) if account else 0.0
+    else:
+        account = await state.get_account()
+        balance = float(account.get("balance", 0.0)) if account else 0.0
 
     if balance <= 0:
         logger.error("Cannot execute trade: balance=%.2f", balance)
-        return
+        return connection
 
     # ── 2. Lot calculation (anti-martingale: halve on consecutive losses) ──
     sl_distance = float(signal.get("sl_distance", 0.0))
     if sl_distance <= 0:
         logger.error("Cannot execute trade: invalid sl_distance=%.2f", sl_distance)
-        return
+        return connection
 
     consec = await state.get_consecutive_losses()
 
@@ -166,19 +183,17 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
     )
 
     # ── 3. Place order ──────────────────────────────────────────────────────
-    # In live mode: connect to MetaApi now (lazily, after NANAMI is already subscribed).
-    live_connection = connection
-    if not PAPER_MODE and live_connection is None:
-        live_connection = await _get_connection()
+    if not PAPER_MODE and connection is None:
+        connection = await _get_connection()
 
     try:
-        order_result = await place_order(signal, lot_size, live_connection)
+        order_result = await place_order(signal, lot_size, connection)
     except Exception as exc:
         logger.error("Order placement failed: %s — signal dropped", exc)
         await state.set_trading_state("last_risk_decision", "ERROR")
         signal["status"] = "ERROR"
         await state.set_trading_state("last_signal", json.dumps(signal))
-        return
+        return connection
 
     # ── 4. Log open trade ───────────────────────────────────────────────────
     trade_id = await log_trade_open(state, signal, lot_size, order_result)
@@ -206,50 +221,140 @@ async def _execute_signal(state: StateManager, signal: dict, connection):
         "Signal PLACED: trade_id=%d %s %s | order_id=%s",
         trade_id, model, direction, order_result.get("order_id"),
     )
+    return connection
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Position monitoring (paper mode)
+# Position monitoring
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _poll_positions(state: StateManager, connection):
-    """Check all open trades: breakeven protection, then check exits."""
+    """Route to paper or live position monitoring."""
+    if PAPER_MODE:
+        await _poll_paper_positions(state)
+    else:
+        await _poll_live_positions(state, connection)
+
+
+async def _poll_paper_positions(state: StateManager):
+    """Paper mode: simulate exits using bid/ask from session_info."""
     open_trades = await state.get_open_trades()
     if not open_trades:
         return
 
-    # Prefer price from SQLite session_info (NANAMI writes bid/ask every 60s).
-    # This avoids a second concurrent MetaApi subscription competing with NANAMI.
     bid = float(await state.get_session_info("current_bid") or 0)
     ask = float(await state.get_session_info("current_ask") or 0)
-
     if bid <= 0 or ask <= 0:
-        # Fallback to MetaApi if NANAMI hasn't written price yet
-        if connection is None:
-            logger.debug("No price available — skipping trade monitor cycle")
-            return
-        price = await get_current_price(connection)
-        if not price:
-            logger.warning("Could not fetch price — skipping trade monitor cycle")
-            return
-        bid = price["bid"]
-        ask = price["ask"]
-    now = datetime.now(timezone.utc)
+        logger.debug("No price available — skipping paper trade monitor cycle")
+        return
 
+    now = datetime.now(timezone.utc)
     for trade in open_trades:
-        # 1. Check breakeven protection
         new_sl = check_breakeven(trade, bid, ask)
         if new_sl is not None:
             await state.update_trade(trade["id"], sl_price=new_sl)
-            trade["sl_price"] = new_sl  # update in-memory for exit check
+            trade["sl_price"] = new_sl
             logger.info("Breakeven activated: id=%d → SL=%.2f", trade["id"], new_sl)
 
-        # 2. Check for exit
         exit_info = check_exit(trade, bid, ask, now)
         if exit_info is None:
             continue
-
         await _close_trade(state, trade, exit_info, bid, ask)
+
+
+async def _poll_live_positions(state: StateManager, connection):
+    """Live mode: detect broker-closed positions via MetaApi; modify SL for breakeven."""
+    if connection is None:
+        logger.debug("No MetaApi connection — skipping live position monitor")
+        return
+
+    open_trades = await state.get_open_trades()
+    if not open_trades:
+        return
+
+    bid = float(await state.get_session_info("current_bid") or 0)
+    ask = float(await state.get_session_info("current_ask") or 0)
+
+    # ── Breakeven: actually modify the SL on MT5 ───────────────────────────
+    if bid > 0 and ask > 0:
+        for trade in open_trades:
+            new_sl = check_breakeven(trade, bid, ask)
+            if new_sl is not None:
+                order_id = trade.get("order_id", "")
+                try:
+                    await connection.modify_position(order_id, stop_loss=new_sl)
+                    await state.update_trade(trade["id"], sl_price=new_sl)
+                    trade["sl_price"] = new_sl
+                    logger.info(
+                        "Breakeven SL modified on MT5: id=%d order=%s → SL=%.2f",
+                        trade["id"], order_id, new_sl,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to modify SL on MT5 for order %s: %s", order_id, exc
+                    )
+
+    # ── Detect positions closed by broker ─────────────────────────────────
+    closed = await find_closed_trades(connection, open_trades)
+    if not closed:
+        return
+
+    # Sync real balance from MetaApi after all broker closes
+    real_balance = None
+    try:
+        acct_info = await connection.get_account_information()
+        real_balance = float(acct_info.get("balance", 0.0))
+        real_equity  = float(acct_info.get("equity", real_balance))
+        logger.info("Post-close balance synced from MT5: %.2f (equity %.2f)", real_balance, real_equity)
+    except Exception as exc:
+        logger.warning("Could not fetch live balance after close: %s", exc)
+
+    for trade in closed:
+        direction = trade.get("direction", "")
+        sl        = float(trade.get("sl_price", 0))
+        tp        = float(trade.get("tp_price", 0))
+        entry     = float(trade.get("entry_price", 0))
+
+        # Determine which level was hit based on current price
+        if bid > 0 and ask > 0:
+            price = bid if direction == "BUY" else ask
+            if direction == "BUY":
+                if price >= tp:
+                    exit_price, exit_reason = tp, "TP_HIT"
+                else:
+                    exit_price, exit_reason = sl, "SL_HIT"
+            else:
+                if price <= tp:
+                    exit_price, exit_reason = tp, "TP_HIT"
+                else:
+                    exit_price, exit_reason = sl, "SL_HIT"
+        else:
+            exit_price, exit_reason = sl, "SL_HIT"
+
+        pnl = calculate_pnl(trade, exit_price)
+        if pnl > 0.01:
+            result = "WIN"
+        elif abs(sl - entry) < 0.10 and exit_reason == "SL_HIT":
+            result = "BREAKEVEN"
+            pnl = 0.0
+        else:
+            result = "LOSS"
+
+        exit_info = {"result": result, "exit_price": exit_price, "exit_reason": exit_reason}
+        await _close_trade(state, trade, exit_info, bid, ask)
+
+    # Override DB balance with real MT5 balance after all closes are processed
+    if real_balance is not None:
+        account = await state.get_account()
+        peak = max(float(account.get("peak_balance", real_balance)), real_balance)
+        dd   = max(0.0, (peak - real_balance) / peak * 100) if peak > 0 else 0.0
+        await state.update_account(
+            balance        = real_balance,
+            equity         = real_balance,
+            peak_balance   = peak,
+            current_dd_pct = round(dd, 4),
+        )
+        logger.info("DB balance updated to MT5 real: %.2f (DD %.2f%%)", real_balance, dd)
 
 
 async def _close_trade(state: StateManager, trade: dict, exit_info: dict,
