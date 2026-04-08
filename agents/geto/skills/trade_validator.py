@@ -17,6 +17,7 @@ Validation checks (all must pass for APPROVED)
  9. not_halted                — halt_flag AND emergency_halt_flag are both False
 10. structural_break_clear    — no active structural break cooldown
 11. position_cap_ok           — open trades < MAX_SIMULTANEOUS_TRADES (5)
+12. model_a_single_ok        — Model A: at most 1 concurrent open position
 
 Public API
 ──────────
@@ -196,6 +197,14 @@ async def validate(
     # ── 11. position_cap_ok ─────────────────────────────────────────────────
     open_trades = await state.get_open_trades()
     checks["position_cap_ok"] = len(open_trades) < MAX_SIMULTANEOUS_TRADES
+
+    # ── 12. model_a_single_ok ────────────────────────────────────────────────
+    # Model A may have at most 1 concurrent open position (April 1 bust prevention)
+    if model == MODEL_A:
+        open_model_a = [t for t in open_trades if t.get("model") == MODEL_A]
+        checks["model_a_single_ok"] = len(open_model_a) == 0
+    else:
+        checks["model_a_single_ok"] = True
 
     # ── Decision ────────────────────────────────────────────────────────────
     fail_reason = next((name for name, ok in checks.items() if not ok), "")
